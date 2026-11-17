@@ -913,13 +913,13 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
     httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN);
 
     snprintf(line, sizeof(line),
-    "<div class='box'>"
-    "<h3>PV-Anlage</h3>"
-    "<p>Netzleistung: <b>%d W</b></p>",
-    c.grid_power_w
-    "<p>Aktuelle Leistung: <b>%d W</b></p>"
-    "</div><br>",
-    c.pv_power_w);
+        "<div class='box'>"
+        "<h3>PV-Anlage</h3>"
+        "<p>Aktuelle Leistung: <b>%d W</b></p>"
+        "<p>Netzleistung: <b>%d W</b></p>"
+        "</div><br>",
+        c.pv_power_w,
+        c.grid_power_w);
     httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN);
     
     // Hausverbrauch
