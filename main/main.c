@@ -144,6 +144,17 @@ typedef struct {
     int64_t updated_us;    // 0 = noch nie erfolgreich
     int     bat_power_w;   // > 0 = Laden, < 0 = Entladen
     bool    power_valid;
+    int pv_power_w;
+    int grid_power_w;
+    int grid_state;
+    int system_state;
+    float battery_temp;
+    float battery_soh;
+    uint32_t inverter_alarm;
+    uint32_t grid_fault;
+    uint32_t battery_fault;
+    uint32_t battery_alarm;
+    uint32_t bms_alarm;
     wb_data_t wb;          // Wallbox
     cons_data_t cons;      // Hausverbrauch
 } soc_cache_t;
