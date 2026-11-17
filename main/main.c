@@ -50,6 +50,19 @@ static const char *TAG = "SUNGROW_ETH_AP";
 // Richtung (Laden/Entladen) kommt aus dem Betriebszustand der Batterie (Input Register 13000):
 // Bit 1 (Wert 2) = lädt, Bit 2 (Wert 4) = entlädt.
 #define REG_RUNNING_STATE    13000
+#define REG_PV_POWER          5016
+#define REG_SYSTEM_STATE     12999
+#define REG_PV_DAY_ENERGY    13001
+#define REG_PV_TOTAL_ENERGY  13002
+#define REG_GRID_POWER       13009
+#define REG_BATTERY_SOH      13023
+#define REG_BATTERY_TEMP     13024
+#define REG_GRID_STATE       13029
+#define REG_INVERTER_ALARM   13049
+#define REG_GRID_FAULT       13051
+#define REG_BATTERY_FAULT    13065
+#define REG_BATTERY_ALARM    13067
+#define REG_BMS_ALARM        13069
 // Nur als Rückfall, falls keines der beiden Bits gesetzt ist: Vorzeichen des Batteriestroms.
 // 1 = negativ bedeutet Laden, 0 = positiv bedeutet Laden
 #define BATTERY_CURRENT_NEG_IS_CHARGING  0
