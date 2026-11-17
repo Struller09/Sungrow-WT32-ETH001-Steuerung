@@ -467,6 +467,20 @@ static bool modbus_read_battery_power_locked(int *watts) {
     return true;
 }
 
+// Betrag aus der PV-Leistung (W) (Register 5016).
+static bool modbus_read_pv_power_locked(int *watts)
+{
+    uint16_t r[2] = {0,0};
+    esp_err_t err =
+        mb_transaction(&s_inv, 0x04, REG_PV_POWER, 2, r);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Fehler beim Lesen der PV-Leistung: 0x%x", err);
+        return false;
+    }
+    *watts = (int)(((uint32_t)r[1] << 16) | r[0]);
+    return true;
+}
+
 static void cache_update(float bat, int backup) {
     xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
     s_cache.bat_soc    = bat;
@@ -676,11 +690,18 @@ static void modbus_task(void *arg) {
             int backup = modbus_read_backup_soc_locked();
             int watts = 0;
             bool power_ok = modbus_read_battery_power_locked(&watts);
+            int pv_power = 0;
+            bool pv_ok = modbus_read_pv_power_locked(&pv_power);
             cons_data_t cons;
             consumption_read(&cons);
             xSemaphoreGive(s_mb_mutex);
             cache_update(bat, backup);
             cache_update_power(power_ok, watts);
+            if (pv_ok) {
+                xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
+                s_cache.pv_power_w = pv_power;
+                xSemaphoreGive(s_cache_mutex);
+            }
             cache_update_cons(&cons);
         }
 
@@ -867,6 +888,14 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         "</div><br>", bat_str, pwr_str, backup_str);
     httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN);
 
+    snprintf(line, sizeof(line),
+    "<div class='box'>"
+    "<h3>PV-Anlage</h3>"
+    "<p>Aktuelle Leistung: <b>%d W</b></p>"
+    "</div><br>",
+    c.pv_power_w);
+    httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN);
+    
     // Hausverbrauch
     {
         char load_str[24] = "keine Daten", day_str[24] = "keine Daten", year_str[160] = "keine Daten";
