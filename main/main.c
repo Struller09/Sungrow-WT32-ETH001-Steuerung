@@ -158,9 +158,26 @@ typedef struct {
     wb_data_t wb;          // Wallbox
     cons_data_t cons;      // Hausverbrauch
 } soc_cache_t;
-static soc_cache_t s_cache = { -1.0f, -1, 0, 0, false,
-                               { false, 0, -1, { -1, -1, -1 }, 0, -1, -1 },
-                               { false, 0, -1, -1, 0 } };
+static soc_cache_t s_cache = {
+    .bat_soc = -1.0f,
+    .backup_soc = -1,
+    .updated_us = 0,
+    .bat_power_w = 0,
+    .power_valid = false,
+    .pv_power_w = 0,
+    .grid_power_w = 0,
+    .grid_state = 0,
+    .system_state = 0,
+    .battery_temp = 0.0f,
+    .battery_soh = 0.0f,
+    .inverter_alarm = 0,
+    .grid_fault = 0,
+    .battery_fault = 0,
+    .battery_alarm = 0,
+    .bms_alarm = 0,
+    .wb = {false, 0, -1, { -1, -1, -1 }, 0, -1, -1 },
+    .cons = {false, 0, -1, -1, 0 }
+};
 
 // =====================================================
 //                    NVS-Konfiguration
