@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "sungrow_wt32",
-    "project_version":    "12712fb-dirty",
+    "project_version":    "f8cd0dc-dirty",
     "project_path":       "C:/Users/Striker/ESP32_ETH/Sungrow-WT32-ETH001-Steuerung",
     "idf_path":           "C:/Espressif/frameworks/esp-idf-v5.5.5",
     "build_dir":          "C:/Users/Striker/ESP32_ETH/Sungrow-WT32-ETH001-Steuerung/build",

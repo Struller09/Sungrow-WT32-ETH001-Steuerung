@@ -530,6 +530,29 @@ static bool modbus_read_battery_temp_locked(float *temp)
     return true;
 }
 
+static bool modbus_read_u16_locked(
+    uint16_t reg,
+    uint16_t *value)
+{
+    return mb_transaction(&s_inv, 0x04, reg, 1, value) == ESP_OK;
+}
+
+static bool modbus_read_u32_locked(
+    uint16_t reg,
+    uint32_t *value)
+{
+    uint16_t r[2];
+
+    if (mb_transaction(&s_inv, 0x04, reg, 2, r) != ESP_OK)
+        return false;
+
+    *value =
+        ((uint32_t)r[1] << 16) | r[0];
+    return true;
+}
+
+
+
 // Cachbereich für Anzeigen
 static void cache_update(float bat, int backup) {
     xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
@@ -736,6 +759,7 @@ static void modbus_task(void *arg) {
 
     while (1) {
         if (xSemaphoreTake(s_mb_mutex, pdMS_TO_TICKS(30000)) == pdTRUE) {
+
             float bat = modbus_read_battery_soc_locked();
             int backup = modbus_read_backup_soc_locked();
             int watts = 0;
@@ -744,37 +768,51 @@ static void modbus_task(void *arg) {
             bool pv_ok = modbus_read_pv_power_locked(&pv_power);
             int grid_power = 0;
             bool grid_ok = modbus_read_grid_power_locked(&grid_power);
-			float battery_soh = 0.0f;
-			bool soh_ok = modbus_read_battery_soh_locked(&battery_soh);
-			float battery_temp = 0.0f;
-			bool temp_ok = modbus_read_battery_temp_locked(&battery_temp);
+            float battery_soh = 0.0f;
+            bool soh_ok = modbus_read_battery_soh_locked(&battery_soh);
+            float battery_temp = 0.0f;
+            bool temp_ok = modbus_read_battery_temp_locked(&battery_temp);
+            uint16_t system_state = 0;
+            uint16_t grid_state = 0;
+            uint32_t inverter_alarm = 0;
+            uint32_t grid_fault = 0;
+            uint32_t battery_fault = 0;
+            uint32_t battery_alarm = 0;
+            uint32_t bms_alarm = 0;
+
+            modbus_read_u16_locked(REG_SYSTEM_STATE, &system_state);
+            modbus_read_u16_locked(REG_GRID_STATE, &grid_state);
+            modbus_read_u32_locked(REG_INVERTER_ALARM, &inverter_alarm);
+            modbus_read_u32_locked(REG_GRID_FAULT, &grid_fault);
+            modbus_read_u32_locked(REG_BATTERY_FAULT, &battery_fault);
+            modbus_read_u32_locked(REG_BATTERY_ALARM, &battery_alarm);
+            modbus_read_u32_locked(REG_BMS_ALARM, &bms_alarm);
+
             cons_data_t cons;
             consumption_read(&cons);
             xSemaphoreGive(s_mb_mutex);
             cache_update(bat, backup);
             cache_update_power(power_ok, watts);
-            if (pv_ok) {
-                xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
-                s_cache.pv_power_w = pv_power;
-                xSemaphoreGive(s_cache_mutex);
-            }
-            if (grid_ok) {
-                xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
-                s_cache.grid_power_w = grid_power;
-                xSemaphoreGive(s_cache_mutex);
-            }
-			if (soh_ok) {
-				xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
-				s_cache.battery_soh = battery_soh;
-				xSemaphoreGive(s_cache_mutex);
-			}
-
-			if (temp_ok) {
-				xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
-				s_cache.battery_temp = battery_temp;
-				xSemaphoreGive(s_cache_mutex);
-			}
             cache_update_cons(&cons);
+            xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
+
+            if (pv_ok)
+                s_cache.pv_power_w = pv_power;
+            if (grid_ok)
+                s_cache.grid_power_w = grid_power;
+            if (soh_ok)
+                s_cache.battery_soh = battery_soh;
+            if (temp_ok)
+                s_cache.battery_temp = battery_temp;
+
+            s_cache.system_state = system_state;
+            s_cache.grid_state = grid_state;
+            s_cache.inverter_alarm = inverter_alarm;
+            s_cache.grid_fault = grid_fault;
+            s_cache.battery_fault = battery_fault;
+            s_cache.battery_alarm = battery_alarm;
+            s_cache.bms_alarm = bms_alarm;
+            xSemaphoreGive(s_cache_mutex);
         }
 
         // Wallbox (eigene Verbindung), nur wenn eine IP eingetragen ist
@@ -938,7 +976,7 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_send_chunk(req, HTML_HEAD, HTTPD_RESP_USE_STRLEN);
-    httpd_resp_send_chunk(req, "<h2>Sungrow Batterie-Steuerung</h2>", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req, "<h2>Sungrow Batterie-Steuerung Test</h2>", HTTPD_RESP_USE_STRLEN);
 
     if (strcmp(g_web_pass, DEFAULT_WEB_PASS) == 0) {
         httpd_resp_send_chunk(req,
@@ -952,27 +990,111 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
     else if (c.bat_power_w < 0) snprintf(pwr_str, sizeof(pwr_str), "Entladen: %d W", -c.bat_power_w);
     else                        snprintf(pwr_str, sizeof(pwr_str), "0 W (Ruhe)");
 
+     //Batterie-Status
     snprintf(line, sizeof(line),
-    "<div class='box'>"
-    "<p>Aktueller Akkustand: <b>%s</b></p>"
-    "<p>Lade-/Entladeleistung: <b>%s</b></p>"
-    "<p>SOH: <b>%.1f %%</b></p>"
-    "<p>Batterietemperatur: <b>%.1f °C</b></p>"
-    "<p>Eingestellte Notreserve: <b>%s</b></p>"
-    "</div><br>",
-    bat_str, pwr_str, c.battery_soh, c.battery_temp, backup_str);
+        "<div class='box'>"
+        "<p>Aktueller Akkustand: <b>%s</b></p>"
+        "<p>Lade-/Entladeleistung: <b>%s</b></p>"
+        "<p>SOH: <b>%.1f %%</b></p>"
+        "<p>Batterietemperatur: <b>%.1f °C</b></p>"
+        "<p>Eingestellte Notreserve: <b>%s</b></p>"
+        "</div><br>",
+        bat_str, pwr_str, c.battery_soh, c.battery_temp, backup_str);
     httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN);
 
-   snprintf(line, sizeof(line),
+     // PV-Anlage
+    char grid_str[64];
+
+    if (c.grid_power_w < 0)
+    {
+        snprintf(grid_str,
+                sizeof(grid_str),
+                "Netzbezug %d W",
+                -c.grid_power_w);
+    }
+    else
+    {
+        snprintf(grid_str,
+                sizeof(grid_str),
+                "Einspeisung %d W",
+                c.grid_power_w);
+    }
+
+    snprintf(line, sizeof(line),
 		"<div class='box'>"
 		"<h3>PV-Anlage</h3>"
 		"<p>Aktuelle Leistung: <b>%d W</b></p>"
-		"<p>Netzleistung: <b>%d W</b></p>"
+		"<p><b>%s</b></p>"
 		"</div><br>",
 		c.pv_power_w,
-		c.grid_power_w);
+		grid_str);
 	httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN);
-    
+
+    /* alter Debug
+    // DebugDiagnose
+    snprintf(line, sizeof(line),
+        "<div class='box'>"
+        "<h3>Systemdiagnose</h3>"
+        "<p>System State: <b>%u (0x%04X)</b></p>"
+        "<p>Grid State: <b>%d (0x%04X)</b></p>"
+        "<p>Inverter Alarm: <b>%lu</b></p>"
+        "<p>Grid Fault: <b>%lu</b></p>"
+        "<p>Battery Fault: <b>%lu</b></p>"
+        "<p>Battery Alarm: <b>%lu</b></p>"
+        "<p>BMS Alarm: <b>%lu</b></p>"
+        "</div><br>",
+
+        (unsigned)c.system_state,
+        (unsigned)c.system_state,
+        (int16_t)c.grid_state,
+        (unsigned)c.grid_state,
+        (unsigned long)c.inverter_alarm,
+        (unsigned long)c.grid_fault,
+        (unsigned long)c.battery_fault,
+        (unsigned long)c.battery_alarm,
+        (unsigned long)c.bms_alarm);
+
+    httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN);
+
+    */
+
+    // Statusbox
+    char system_str[64];
+    char grid_str2[64];
+
+    snprintf(system_str, sizeof(system_str), "Code %u", (unsigned)c.system_state);
+    snprintf(grid_str2, sizeof(grid_str2), "Code %d", (int16_t)c.grid_state);
+            
+    if (c.inverter_alarm ||
+        c.grid_fault ||
+        c.battery_fault ||
+        c.battery_alarm ||
+        c.bms_alarm)
+    {
+    snprintf(line, sizeof(line),
+        "<div class='box'>"
+        "<h3>Status</h3>"
+        "<p>System: <b>%s</b></p>"
+        "<p>Netz: <b>%s</b></p>"
+        "<p style='color:red'><b>Alarm aktiv</b></p>"
+        "</div><br>",
+        system_str,
+        grid_str2);
+    }
+    else
+    {
+    snprintf(line, sizeof(line),
+        "<div class='box'>"
+        "<h3>Status</h3>"
+        "<p>System: <b>%s</b></p>"
+        "<p>Netz: <b>%s</b></p>"
+        "<p style='color:green'><b>Keine Alarme</b></p>"
+        "</div><br>",
+        system_str,
+        grid_str2);
+    }
+    httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN);
+
     // Hausverbrauch
     {
         char load_str[24] = "keine Daten", day_str[24] = "keine Daten", year_str[160] = "keine Daten";
@@ -1359,7 +1481,15 @@ static esp_err_t ota_post_handler(httpd_req_t *req) {
     }
 
     esp_ota_handle_t ota_handle = 0;
+    const esp_partition_t *running = esp_ota_get_running_partition();
+
+    ESP_LOGI(TAG, "Running partition: %s", running ? running->label : "NULL");
+
     const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
+
+    ESP_LOGI(TAG,
+            "Update partition: %s", update_partition ? update_partition->label : "NULL");
+
     if (update_partition == NULL) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Keine OTA-Partition gefunden!");
         return ESP_FAIL;
