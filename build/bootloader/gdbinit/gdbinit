@@ -1,0 +1,2 @@
+source C:/Users/Striker/ESP32_ETH/Sungrow-WT32-ETH001-Steuerung/build/bootloader/gdbinit/symbols
+source C:/Users/Striker/ESP32_ETH/Sungrow-WT32-ETH001-Steuerung/build/bootloader/gdbinit/connect

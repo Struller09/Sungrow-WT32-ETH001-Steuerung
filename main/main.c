@@ -498,6 +498,39 @@ static bool modbus_read_grid_power_locked(int *watts)
     return true;
 }
 
+// Betrag aus SOH Zustand (Register 13023).
+static bool modbus_read_battery_soh_locked(float *soh)
+{
+    uint16_t raw = 0;
+    esp_err_t err =
+        mb_transaction(&s_inv,
+                       0x04,
+                       REG_BATTERY_SOH,
+                       1,
+                       &raw);
+    if (err != ESP_OK)
+        return false;
+    *soh = raw / 10.0f;
+    return true;
+}
+
+// Betrag aus Batterie temperatur (Register 13024).
+static bool modbus_read_battery_temp_locked(float *temp)
+{
+    uint16_t raw = 0;
+    esp_err_t err =
+        mb_transaction(&s_inv,
+                       0x04,
+                       REG_BATTERY_TEMP,
+                       1,
+                       &raw);
+    if (err != ESP_OK)
+        return false;
+    *temp = ((int16_t)raw) / 10.0f;
+    return true;
+}
+
+// Cachbereich für Anzeigen
 static void cache_update(float bat, int backup) {
     xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
     s_cache.bat_soc    = bat;
@@ -711,6 +744,10 @@ static void modbus_task(void *arg) {
             bool pv_ok = modbus_read_pv_power_locked(&pv_power);
             int grid_power = 0;
             bool grid_ok = modbus_read_grid_power_locked(&grid_power);
+			float battery_soh = 0.0f;
+			bool soh_ok = modbus_read_battery_soh_locked(&battery_soh);
+			float battery_temp = 0.0f;
+			bool temp_ok = modbus_read_battery_temp_locked(&battery_temp);
             cons_data_t cons;
             consumption_read(&cons);
             xSemaphoreGive(s_mb_mutex);
@@ -726,6 +763,17 @@ static void modbus_task(void *arg) {
                 s_cache.grid_power_w = grid_power;
                 xSemaphoreGive(s_cache_mutex);
             }
+			if (soh_ok) {
+				xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
+				s_cache.battery_soh = battery_soh;
+				xSemaphoreGive(s_cache_mutex);
+			}
+
+			if (temp_ok) {
+				xSemaphoreTake(s_cache_mutex, portMAX_DELAY);
+				s_cache.battery_temp = battery_temp;
+				xSemaphoreGive(s_cache_mutex);
+			}
             cache_update_cons(&cons);
         }
 
@@ -905,22 +953,25 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
     else                        snprintf(pwr_str, sizeof(pwr_str), "0 W (Ruhe)");
 
     snprintf(line, sizeof(line),
-        "<div class='box'>"
-        "<p>Aktueller Akkustand: <b>%s</b></p>"
-        "<p>Lade-/Entladeleistung: <b>%s</b></p>"
-        "<p>Eingestellte Notreserve: <b>%s</b></p>"
-        "</div><br>", bat_str, pwr_str, backup_str);
+    "<div class='box'>"
+    "<p>Aktueller Akkustand: <b>%s</b></p>"
+    "<p>Lade-/Entladeleistung: <b>%s</b></p>"
+    "<p>SOH: <b>%.1f %%</b></p>"
+    "<p>Batterietemperatur: <b>%.1f °C</b></p>"
+    "<p>Eingestellte Notreserve: <b>%s</b></p>"
+    "</div><br>",
+    bat_str, pwr_str, c.battery_soh, c.battery_temp, backup_str);
     httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN);
 
-    snprintf(line, sizeof(line),
-        "<div class='box'>"
-        "<h3>PV-Anlage</h3>"
-        "<p>Aktuelle Leistung: <b>%d W</b></p>"
-        "<p>Netzleistung: <b>%d W</b></p>"
-        "</div><br>",
-        c.pv_power_w,
-        c.grid_power_w);
-    httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN);
+   snprintf(line, sizeof(line),
+		"<div class='box'>"
+		"<h3>PV-Anlage</h3>"
+		"<p>Aktuelle Leistung: <b>%d W</b></p>"
+		"<p>Netzleistung: <b>%d W</b></p>"
+		"</div><br>",
+		c.pv_power_w,
+		c.grid_power_w);
+	httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN);
     
     // Hausverbrauch
     {
