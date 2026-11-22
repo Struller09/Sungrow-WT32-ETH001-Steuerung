@@ -1177,7 +1177,7 @@ static esp_err_t json_send(httpd_req_t *req, jb_t *j) {
 
 // ---- /api/status: alle Live-Werte der Hauptseite ----
 static esp_err_t api_status_handler(httpd_req_t *req) {
-    if (!guard(req, false)) return ESP_OK;
+    // öffentlich (nur lesend): kein Login nötig
 
     soc_cache_t c = cache_get();
     const inv_ext_t *x = &c.ext;
@@ -1261,7 +1261,7 @@ static void jb_mb(jb_t *j, const char *key, const mb_dev_t *d) {
 
 // ---- /api/info: Geräte-, Netz- und Systeminformationen ----
 static esp_err_t api_info_handler(httpd_req_t *req) {
-    if (!guard(req, false)) return ESP_OK;
+    // öffentlich (nur lesend): kein Login nötig
 
     soc_cache_t c = cache_get();
     const inv_ext_t *x = &c.ext;
@@ -1348,7 +1348,7 @@ static esp_err_t api_info_handler(httpd_req_t *req) {
 
 // ---- /api/history ----
 static esp_err_t api_history_handler(httpd_req_t *req) {
-    if (!guard(req, false)) return ESP_OK;
+    // öffentlich (nur lesend): kein Login nötig
 
     hist_t *h = malloc(sizeof(hist_t) * HIST_N);
     if (!h) {
@@ -1401,7 +1401,7 @@ static esp_err_t api_history_handler(httpd_req_t *req) {
 //   Hauptseite (/): statisches HTML, Werte kommen per /api/status
 // =====================================================
 static esp_err_t root_get_handler(httpd_req_t *req) {
-    if (!guard(req, false)) return ESP_OK;
+    // öffentlich (nur lesend): kein Login nötig
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -1599,7 +1599,7 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
 //   Infoseite (/info): Inhalt kommt per /api/info
 // =====================================================
 static esp_err_t info_get_handler(httpd_req_t *req) {
-    if (!guard(req, false)) return ESP_OK;
+    // öffentlich (nur lesend): kein Login nötig
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -1732,7 +1732,7 @@ static esp_err_t info_get_handler(httpd_req_t *req) {
 //   Verlauf (/chart): Diagramme per Canvas aus /api/history
 // =====================================================
 static esp_err_t chart_get_handler(httpd_req_t *req) {
-    if (!guard(req, false)) return ESP_OK;
+    // öffentlich (nur lesend): kein Login nötig
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
