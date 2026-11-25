@@ -1,0 +1,450 @@
+Command: C:\Espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe C:/Espressif/frameworks/esp-idf-v5.5.5/tools/idf_monitor.py -p COM3 -b 115200 --toolchain-prefix xtensa-esp32-elf- --target esp32 --revision 0 C:\Users\Striker\ESP32_ETH\Sungrow-WT32-ETH001-Steuerung\build\sungrow_wt32.elf C:\Users\Striker\ESP32_ETH\Sungrow-WT32-ETH001-Steuerung\build\bootloader\bootloader.elf --force-color -m 'C:\Espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe' 'C:/Espressif/frameworks/esp-idf-v5.5.5/\tools\idf.py' '-p' 'COM3'
+[0;32mI (4758) SUNGROW_ETH_AP: esp_eth_start fertig.[0m
+[0;32mI (4758) SUNGROW_ETH_AP: Ethernet-Init abgeschlossen, starte WLAN...[0m
+[0;32mI (4768) wifi:wifi driver task: 3ffc6358, prio:23, stack:6656, core=0[0m
+E BOD: Brownout detector was triggered
+
+
+ets Jun  8 2016 00:22:57
+
+rst:0x3 (SW_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0030,len:6280
+load:0x40078000,len:15836
+ho 0 tail 12 room 4
+load:0x40080400,len:3920
+entry 0x40080644
+[0;32mI (56) boot: ESP-IDF v5.5.5-dirty 2nd stage bootloader[0m
+[0;32mI (56) boot: compile time Nov 18 2026 15:43:35[0m
+[0;32mI (56) boot: Multicore bootloader[0m
+[0;32mI (59) boot: chip revision: v1.1[0m
+[0;32mI (62) boot.esp32: SPI Speed      : 40MHz[0m
+[0;32mI (65) boot.esp32: SPI Mode       : DIO[0m
+[0;32mI (69) boot.esp32: SPI Flash Size : 4MB[0m
+[0;32mI (72) boot: Enabling RNG early entropy source...[0m
+[0;32mI (77) boot: Partition Table:[0m
+[0;32mI (80) boot: ## Label            Usage          Type ST Offset   Length[0m
+[0;32mI (86) boot:  0 nvs              WiFi data        01 02 00009000 00006000[0m
+[0;32mI (92) boot:  1 otadata          OTA data         01 00 0000f000 00002000[0m
+[0;32mI (99) boot:  2 phy_init         RF data          01 01 00011000 00001000[0m
+[0;32mI (105) boot:  3 ota_0            OTA app          00 10 00020000 001e0000[0m
+[0;32mI (112) boot:  4 ota_1            OTA app          00 11 00200000 001e0000[0m
+[0;32mI (119) boot: End of partition table[0m
+[0;32mI (122) esp_image: segment 0: paddr=00020020 vaddr=3f400020 size=2c6d4h (181972) map[0m
+[0;32mI (192) esp_image: segment 1: paddr=0004c6fc vaddr=3ffb0000 size=0391ch ( 14620) load[0m
+[0;32mI (198) esp_image: segment 2: paddr=00050020 vaddr=400d0020 size=a83b8h (689080) map[0m
+[0;32mI (433) esp_image: segment 3: paddr=000f83e0 vaddr=3ffb391c size=00bdch (  3036) load[0m
+[0;32mI (435) esp_image: segment 4: paddr=000f8fc4 vaddr=40080000 size=18548h ( 99656) load[0m
+[0;32mI (476) esp_image: segment 5: paddr=00111514 vaddr=50000000 size=00020h (    32) load[0m
+[0;32mI (488) boot: Loaded app from partition at offset 0x20000[0m
+[0;32mI (489) boot: Disabling RNG early entropy source...[0m
+[0;32mI (499) cpu_start: Multicore app[0m
+[0;32mI (507) cpu_start: GPIO 3 and 1 are used as console UART I/O pins[0m
+[0;32mI (508) cpu_start: Pro cpu start user code[0m
+[0;32mI (508) cpu_start: cpu freq: 160000000 Hz[0m
+[0;32mI (510) app_init: Application information:[0m
+[0;32mI (513) app_init: Project name:     sungrow_wt32[0m
+[0;32mI (518) app_init: App version:      2561442-dirty[0m
+[0;32mI (522) app_init: Compile time:     Nov 25 2026 17:03:13[0m
+[0;32mI (527) app_init: ELF file SHA256:  0c9535cf7...[0m
+[0;32mI (531) app_init: ESP-IDF:          v5.5.5-dirty[0m
+[0;32mI (536) efuse_init: Min chip rev:     v0.0[0m
+[0;32mI (540) efuse_init: Max chip rev:     v3.99 [0m
+[0;32mI (544) efuse_init: Chip rev:         v1.1[0m
+[0;32mI (548) heap_init: Initializing. RAM available for dynamic allocation:[0m
+[0;32mI (554) heap_init: At 3FFAE6E0 len 00001920 (6 KiB): DRAM[0m
+[0;32mI (559) heap_init: At 3FFB9FE0 len 00026020 (152 KiB): DRAM[0m
+[0;32mI (564) heap_init: At 3FFE0440 len 00003AE0 (14 KiB): D/IRAM[0m
+[0;32mI (569) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM[0m
+[0;32mI (575) heap_init: At 40098548 len 00007AB8 (30 KiB): IRAM[0m
+[0;32mI (582) spi_flash: detected chip: generic[0m
+[0;32mI (584) spi_flash: flash io: dio[0m
+[0;32mI (588) main_task: Started on CPU0[0m
+[0;32mI (588) main_task: Calling app_main()[0m
+[0;32mI (608) SUNGROW_ETH_AP: Keine gespeicherte Konfiguration, nutze Standardwerte.[0m
+[0;32mI (608) SUNGROW_ETH_AP: Wechselrichter-Profil: Sungrow SH-RT (Hybrid)[0m
+[0;32mI (618) SUNGROW_ETH_AP: Konfiguration: Sungrow-IP = 192.168.188.60, Wallbox-IP = (aus)[0m
+[0;32mI (758) esp_eth.netif.netif_glue: 68:09:47:d1:17:b7[0m
+[0;32mI (758) esp_eth.netif.netif_glue: ethernet attached to netif[0m
+[0;32mI (758) SUNGROW_ETH_AP: Starte Ethernet (esp_eth_start)...[0m
+[0;32mI (4758) SUNGROW_ETH_AP: esp_eth_start fertig.[0m
+[0;32mI (4758) SUNGROW_ETH_AP: Ethernet-Init abgeschlossen, starte WLAN...[0m
+[0;32mI (4768) wifi:wifi driver task: 3ffc6358, prio:23, stack:6656, core=0[0m
+E BOD: Brownout detector was triggered
+
+
+ets Jun  8 2016 00:22:57
+
+rst:0x3 (SW_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0030,len:6280
+load:0x40078000,len:15836
+ho 0 tail 12 room 4
+load:0x40080400,len:3920
+entry 0x40080644
+[0;32mI (56) boot: ESP-IDF v5.5.5-dirty 2nd stage bootloader[0m
+[0;32mI (56) boot: compile time Nov 18 2026 15:43:35[0m
+[0;32mI (56) boot: Multicore bootloader[0m
+[0;32mI (59) boot: chip revision: v1.1[0m
+[0;32mI (62) boot.esp32: SPI Speed      : 40MHz[0m
+[0;32mI (65) boot.esp32: SPI Mode       : DIO[0m
+[0;32mI (69) boot.esp32: SPI Flash Size : 4MB[0m
+[0;32mI (72) boot: Enabling RNG early entropy source...[0m
+[0;32mI (77) boot: Partition Table:[0m
+[0;32mI (80) boot: ## Label            Usage          Type ST Offset   Length[0m
+[0;32mI (86) boot:  0 nvs              WiFi data        01 02 00009000 00006000[0m
+[0;32mI (92) boot:  1 otadata          OTA data         01 00 0000f000 00002000[0m
+[0;32mI (99) boot:  2 phy_init         RF data          01 01 00011000 00001000[0m
+[0;32mI (105) boot:  3 ota_0            OTA app          00 10 00020000 001e0000[0m
+[0;32mI (112) boot:  4 ota_1            OTA app          00 11 00200000 001e0000[0m
+[0;32mI (119) boot: End of partition table[0m
+[0;32mI (122) esp_image: segment 0: paddr=00020020 vaddr=3f400020 size=2c6d4h (181972) map[0m
+[0;32mI (192) esp_image: segment 1: paddr=0004c6fc vaddr=3ffb0000 size=0391ch ( 14620) load[0m
+[0;32mI (197) esp_image: segment 2: paddr=00050020 vaddr=400d0020 size=a83b8h (689080) map[0m
+[0;32mI (433) esp_image: segment 3: paddr=000f83e0 vaddr=3ffb391c size=00bdch (  3036) load[0m
+[0;32mI (435) esp_image: segment 4: paddr=000f8fc4 vaddr=40080000 size=18548h ( 99656) load[0m
+[0;32mI (476) esp_image: segment 5: paddr=00111514 vaddr=50000000 size=00020h (    32) load[0m
+[0;32mI (488) boot: Loaded app from partition at offset 0x20000[0m
+[0;32mI (489) boot: Disabling RNG early entropy source...[0m
+[0;32mI (499) cpu_start: Multicore app[0m
+[0;32mI (507) cpu_start: GPIO 3 and 1 are used as console UART I/O pins[0m
+[0;32mI (508) cpu_start: Pro cpu start user code[0m
+[0;32mI (508) cpu_start: cpu freq: 160000000 Hz[0m
+[0;32mI (510) app_init: Application information:[0m
+[0;32mI (513) app_init: Project name:     sungrow_wt32[0m
+[0;32mI (518) app_init: App version:      2561442-dirty[0m
+[0;32mI (522) app_init: Compile time:     Nov 25 2026 17:03:13[0m
+[0;32mI (527) app_init: ELF file SHA256:  0c9535cf7...[0m
+[0;32mI (531) app_init: ESP-IDF:          v5.5.5-dirty[0m
+[0;32mI (536) efuse_init: Min chip rev:     v0.0[0m
+[0;32mI (540) efuse_init: Max chip rev:     v3.99 [0m
+[0;32mI (544) efuse_init: Chip rev:         v1.1[0m
+[0;32mI (548) heap_init: Initializing. RAM available for dynamic allocation:[0m
+[0;32mI (554) heap_init: At 3FFAE6E0 len 00001920 (6 KiB): DRAM[0m
+[0;32mI (559) heap_init: At 3FFB9FE0 len 00026020 (152 KiB): DRAM[0m
+[0;32mI (564) heap_init: At 3FFE0440 len 00003AE0 (14 KiB): D/IRAM[0m
+[0;32mI (569) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM[0m
+[0;32mI (575) heap_init: At 40098548 len 00007AB8 (30 KiB): IRAM[0m
+[0;32mI (582) spi_flash: detected chip: generic[0m
+[0;32mI (584) spi_flash: flash io: dio[0m
+[0;32mI (588) main_task: Started on CPU0[0m
+[0;32mI (588) main_task: Calling app_main()[0m
+[0;32mI (608) SUNGROW_ETH_AP: Keine gespeicherte Konfiguration, nutze Standardwerte.[0m
+[0;32mI (608) SUNGROW_ETH_AP: Wechselrichter-Profil: Sungrow SH-RT (Hybrid)[0m
+[0;32mI (618) SUNGROW_ETH_AP: Konfiguration: Sungrow-IP = 192.168.188.60, Wallbox-IP = (aus)[0m
+[0;32mI (758) esp_eth.netif.netif_glue: 68:09:47:d1:17:b7[0m
+[0;32mI (758) esp_eth.netif.netif_glue: ethernet attached to netif[0m
+[0;32mI (758) SUNGROW_ETH_AP: Starte Ethernet (esp_eth_start)...[0m
+[0;32mI (4758) SUNGROW_ETH_AP: esp_eth_start fertig.[0m
+[0;32mI (4758) SUNGROW_ETH_AP: Ethernet-Init abgeschlossen, starte WLAN...[0m
+[0;32mI (4768) wifi:wifi driver task: 3ffc6358, prio:23, stack:6656, core=0[0m
+E BOD: Brownout detector was triggered
+
+
+ets Jun  8 2016 00:22:57
+
+rst:0x3 (SW_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0030,len:6280
+load:0x40078000,len:15836
+ho 0 tail 12 room 4
+load:0x40080400,len:3920
+entry 0x40080644
+[0;32mI (56) boot: ESP-IDF v5.5.5-dirty 2nd stage bootloader[0m
+[0;32mI (56) boot: compile time Nov 18 2026 15:43:35[0m
+[0;32mI (56) boot: Multicore bootloader[0m
+[0;32mI (59) boot: chip revision: v1.1[0m
+[0;32mI (62) boot.esp32: SPI Speed      : 40MHz[0m
+[0;32mI (65) boot.esp32: SPI Mode       : DIO[0m
+[0;32mI (69) boot.esp32: SPI Flash Size : 4MB[0m
+[0;32mI (72) boot: Enabling RNG early entropy source...[0m
+[0;32mI (77) boot: Partition Table:[0m
+[0;32mI (80) boot: ## Label            Usage          Type ST Offset   Length[0m
+[0;32mI (86) boot:  0 nvs              WiFi data        01 02 00009000 00006000[0m
+[0;32mI (92) boot:  1 otadata          OTA data         01 00 0000f000 00002000[0m
+[0;32mI (99) boot:  2 phy_init         RF data          01 01 00011000 00001000[0m
+[0;32mI (105) boot:  3 ota_0            OTA app          00 10 00020000 001e0000[0m
+[0;32mI (112) boot:  4 ota_1            OTA app          00 11 00200000 001e0000[0m
+[0;32mI (119) boot: End of partition table[0m
+[0;32mI (122) esp_image: segment 0: paddr=00020020 vaddr=3f400020 size=2c6d4h (181972) map[0m
+[0;32mI (192) esp_image: segment 1: paddr=0004c6fc vaddr=3ffb0000 size=0391ch ( 14620) load[0m
+[0;32mI (197) esp_image: segment 2: paddr=00050020 vaddr=400d0020 size=a83b8h (689080) map[0m
+[0;32mI (433) esp_image: segment 3: paddr=000f83e0 vaddr=3ffb391c size=00bdch (  3036) load[0m
+[0;32mI (435) esp_image: segment 4: paddr=000f8fc4 vaddr=40080000 size=18548h ( 99656) load[0m
+[0;32mI (476) esp_image: segment 5: paddr=00111514 vaddr=50000000 size=00020h (    32) load[0m
+[0;32mI (488) boot: Loaded app from partition at offset 0x20000[0m
+[0;32mI (489) boot: Disabling RNG early entropy source...[0m
+[0;32mI (499) cpu_start: Multicore app[0m
+[0;32mI (507) cpu_start: GPIO 3 and 1 are used as console UART I/O pins[0m
+[0;32mI (508) cpu_start: Pro cpu start user code[0m
+[0;32mI (508) cpu_start: cpu freq: 160000000 Hz[0m
+[0;32mI (510) app_init: Application information:[0m
+[0;32mI (513) app_init: Project name:     sungrow_wt32[0m
+[0;32mI (518) app_init: App version:      2561442-dirty[0m
+[0;32mI (522) app_init: Compile time:     Nov 25 2026 17:03:13[0m
+[0;32mI (527) app_init: ELF file SHA256:  0c9535cf7...[0m
+[0;32mI (531) app_init: ESP-IDF:          v5.5.5-dirty[0m
+[0;32mI (536) efuse_init: Min chip rev:     v0.0[0m
+[0;32mI (540) efuse_init: Max chip rev:     v3.99 [0m
+[0;32mI (544) efuse_init: Chip rev:         v1.1[0m
+[0;32mI (548) heap_init: Initializing. RAM available for dynamic allocation:[0m
+[0;32mI (554) heap_init: At 3FFAE6E0 len 00001920 (6 KiB): DRAM[0m
+[0;32mI (559) heap_init: At 3FFB9FE0 len 00026020 (152 KiB): DRAM[0m
+[0;32mI (564) heap_init: At 3FFE0440 len 00003AE0 (14 KiB): D/IRAM[0m
+[0;32mI (569) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM[0m
+[0;32mI (575) heap_init: At 40098548 len 00007AB8 (30 KiB): IRAM[0m
+[0;32mI (582) spi_flash: detected chip: generic[0m
+[0;32mI (584) spi_flash: flash io: dio[0m
+[0;32mI (588) main_task: Started on CPU0[0m
+[0;32mI (588) main_task: Calling app_main()[0m
+[0;32mI (608) SUNGROW_ETH_AP: Keine gespeicherte Konfiguration, nutze Standardwerte.[0m
+[0;32mI (608) SUNGROW_ETH_AP: Wechselrichter-Profil: Sungrow SH-RT (Hybrid)[0m
+[0;32mI (618) SUNGROW_ETH_AP: Konfiguration: Sungrow-IP = 192.168.188.60, Wallbox-IP = (aus)[0m
+[0;32mI (758) esp_eth.netif.netif_glue: 68:09:47:d1:17:b7[0m
+[0;32mI (758) esp_eth.netif.netif_glue: ethernet attached to netif[0m
+[0;32mI (758) SUNGROW_ETH_AP: Starte Ethernet (esp_eth_start)...[0m
+[0;32mI (4758) SUNGROW_ETH_AP: esp_eth_start fertig.[0m
+[0;32mI (4758) SUNGROW_ETH_AP: Ethernet-Init abgeschlossen, starte WLAN...[0m
+[0;32mI (4768) wifi:wifi driver task: 3ffc6358, prio:23, stack:6656, core=0[0m
+E BOD: Brownout detector was triggered
+
+
+ets Jun  8 2016 00:22:57
+
+rst:0x3 (SW_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0030,len:6280
+load:0x40078000,len:15836
+ho 0 tail 12 room 4
+load:0x40080400,len:3920
+entry 0x40080644
+[0;32mI (56) boot: ESP-IDF v5.5.5-dirty 2nd stage bootloader[0m
+[0;32mI (56) boot: compile time Nov 18 2026 15:43:35[0m
+[0;32mI (56) boot: Multicore bootloader[0m
+[0;32mI (59) boot: chip revision: v1.1[0m
+[0;32mI (62) boot.esp32: SPI Speed      : 40MHz[0m
+[0;32mI (65) boot.esp32: SPI Mode       : DIO[0m
+[0;32mI (69) boot.esp32: SPI Flash Size : 4MB[0m
+[0;32mI (72) boot: Enabling RNG early entropy source...[0m
+[0;32mI (77) boot: Partition Table:[0m
+[0;32mI (80) boot: ## Label            Usage          Type ST Offset   Length[0m
+[0;32mI (86) boot:  0 nvs              WiFi data        01 02 00009000 00006000[0m
+[0;32mI (92) boot:  1 otadata          OTA data         01 00 0000f000 00002000[0m
+[0;32mI (99) boot:  2 phy_init         RF data          01 01 00011000 00001000[0m
+[0;32mI (105) boot:  3 ota_0            OTA app          00 10 00020000 001e0000[0m
+[0;32mI (112) boot:  4 ota_1            OTA app          00 11 00200000 001e0000[0m
+[0;32mI (119) boot: End of partition table[0m
+[0;32mI (122) esp_image: segment 0: paddr=00020020 vaddr=3f400020 size=2c6d4h (181972) map[0m
+[0;32mI (192) esp_image: segment 1: paddr=0004c6fc vaddr=3ffb0000 size=0391ch ( 14620) load[0m
+[0;32mI (197) esp_image: segment 2: paddr=00050020 vaddr=400d0020 size=a83b8h (689080) map[0m
+[0;32mI (433) esp_image: segment 3: paddr=000f83e0 vaddr=3ffb391c size=00bdch (  3036) load[0m
+[0;32mI (435) esp_image: segment 4: paddr=000f8fc4 vaddr=40080000 size=18548h ( 99656) load[0m
+[0;32mI (476) esp_image: segment 5: paddr=00111514 vaddr=50000000 size=00020h (    32) load[0m
+[0;32mI (488) boot: Loaded app from partition at offset 0x20000[0m
+[0;32mI (489) boot: Disabling RNG early entropy source...[0m
+[0;32mI (499) cpu_start: Multicore app[0m
+[0;32mI (507) cpu_start: GPIO 3 and 1 are used as console UART I/O pins[0m
+[0;32mI (508) cpu_start: Pro cpu start user code[0m
+[0;32mI (508) cpu_start: cpu freq: 160000000 Hz[0m
+[0;32mI (510) app_init: Application information:[0m
+[0;32mI (513) app_init: Project name:     sungrow_wt32[0m
+[0;32mI (518) app_init: App version:      2561442-dirty[0m
+[0;32mI (522) app_init: Compile time:     Nov 25 2026 17:03:13[0m
+[0;32mI (527) app_init: ELF file SHA256:  0c9535cf7...[0m
+[0;32mI (531) app_init: ESP-IDF:          v5.5.5-dirty[0m
+[0;32mI (536) efuse_init: Min chip rev:     v0.0[0m
+[0;32mI (540) efuse_init: Max chip rev:     v3.99 [0m
+[0;32mI (544) efuse_init: Chip rev:         v1.1[0m
+[0;32mI (548) heap_init: Initializing. RAM available for dynamic allocation:[0m
+[0;32mI (554) heap_init: At 3FFAE6E0 len 00001920 (6 KiB): DRAM[0m
+[0;32mI (559) heap_init: At 3FFB9FE0 len 00026020 (152 KiB): DRAM[0m
+[0;32mI (564) heap_init: At 3FFE0440 len 00003AE0 (14 KiB): D/IRAM[0m
+[0;32mI (569) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM[0m
+[0;32mI (575) heap_init: At 40098548 len 00007AB8 (30 KiB): IRAM[0m
+[0;32mI (582) spi_flash: detected chip: generic[0m
+[0;32mI (584) spi_flash: flash io: dio[0m
+[0;32mI (588) main_task: Started on CPU0[0m
+[0;32mI (588) main_task: Calling app_main()[0m
+[0;32mI (608) SUNGROW_ETH_AP: Keine gespeicherte Konfiguration, nutze Standardwerte.[0m
+[0;32mI (608) SUNGROW_ETH_AP: Wechselrichter-Profil: Sungrow SH-RT (Hybrid)[0m
+[0;32mI (618) SUNGROW_ETH_AP: Konfiguration: Sungrow-IP = 192.168.188.60, Wallbox-IP = (aus)[0m
+[0;32mI (758) esp_eth.netif.netif_glue: 68:09:47:d1:17:b7[0m
+[0;32mI (758) esp_eth.netif.netif_glue: ethernet attached to netif[0m
+[0;32mI (758) SUNGROW_ETH_AP: Starte Ethernet (esp_eth_start)...[0m
+[0;32mI (4758) SUNGROW_ETH_AP: esp_eth_start fertig.[0m
+[0;32mI (4758) SUNGROW_ETH_AP: Ethernet-Init abgeschlossen, starte WLAN...[0m
+[0;32mI (4768) wifi:wifi driver task: 3ffc6358, prio:23, stack:6656, core=0[0m
+E BOD: Brownout detector was triggered
+
+
+ets Jun  8 2016 00:22:57
+
+rst:0x3 (SW_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0030,len:6280
+load:0x40078000,len:15836
+ho 0 tail 12 room 4
+load:0x40080400,len:3920
+entry 0x40080644
+[0;32mI (56) boot: ESP-IDF v5.5.5-dirty 2nd stage bootloader[0m
+[0;32mI (56) boot: compile time Nov 18 2026 15:43:35[0m
+[0;32mI (56) boot: Multicore bootloader[0m
+[0;32mI (59) boot: chip revision: v1.1[0m
+[0;32mI (62) boot.esp32: SPI Speed      : 40MHz[0m
+[0;32mI (65) boot.esp32: SPI Mode       : DIO[0m
+[0;32mI (69) boot.esp32: SPI Flash Size : 4MB[0m
+[0;32mI (72) boot: Enabling RNG early entropy source...[0m
+[0;32mI (77) boot: Partition Table:[0m
+[0;32mI (80) boot: ## Label            Usage          Type ST Offset   Length[0m
+[0;32mI (86) boot:  0 nvs              WiFi data        01 02 00009000 00006000[0m
+[0;32mI (92) boot:  1 otadata          OTA data         01 00 0000f000 00002000[0m
+[0;32mI (99) boot:  2 phy_init         RF data          01 01 00011000 00001000[0m
+[0;32mI (105) boot:  3 ota_0            OTA app          00 10 00020000 001e0000[0m
+[0;32mI (112) boot:  4 ota_1            OTA app          00 11 00200000 001e0000[0m
+[0;32mI (119) boot: End of partition table[0m
+[0;32mI (122) esp_image: segment 0: paddr=00020020 vaddr=3f400020 size=2c6d4h (181972) map[0m
+[0;32mI (192) esp_image: segment 1: paddr=0004c6fc vaddr=3ffb0000 size=0391ch ( 14620) load[0m
+[0;32mI (198) esp_image: segment 2: paddr=00050020 vaddr=400d0020 size=a83b8h (689080) map[0m
+[0;32mI (433) esp_image: segment 3: paddr=000f83e0 vaddr=3ffb391c size=00bdch (  3036) load[0m
+[0;32mI (435) esp_image: segment 4: paddr=000f8fc4 vaddr=40080000 size=18548h ( 99656) load[0m
+[0;32mI (476) esp_image: segment 5: paddr=00111514 vaddr=50000000 size=00020h (    32) load[0m
+[0;32mI (488) boot: Loaded app from partition at offset 0x20000[0m
+[0;32mI (489) boot: Disabling RNG early entropy source...[0m
+[0;32mI (499) cpu_start: Multicore app[0m
+[0;32mI (507) cpu_start: GPIO 3 and 1 are used as console UART I/O pins[0m
+[0;32mI (508) cpu_start: Pro cpu start user code[0m
+[0;32mI (508) cpu_start: cpu freq: 160000000 Hz[0m
+[0;32mI (510) app_init: Application information:[0m
+[0;32mI (513) app_init: Project name:     sungrow_wt32[0m
+[0;32mI (518) app_init: App version:      2561442-dirty[0m
+[0;32mI (522) app_init: Compile time:     Nov 25 2026 17:03:13[0m
+[0;32mI (527) app_init: ELF file SHA256:  0c9535cf7...[0m
+[0;32mI (531) app_init: ESP-IDF:          v5.5.5-dirty[0m
+[0;32mI (536) efuse_init: Min chip rev:     v0.0[0m
+[0;32mI (540) efuse_init: Max chip rev:     v3.99 [0m
+[0;32mI (544) efuse_init: Chip rev:         v1.1[0m
+[0;32mI (548) heap_init: Initializing. RAM available for dynamic allocation:[0m
+[0;32mI (554) heap_init: At 3FFAE6E0 len 00001920 (6 KiB): DRAM[0m
+[0;32mI (559) heap_init: At 3FFB9FE0 len 00026020 (152 KiB): DRAM[0m
+[0;32mI (564) heap_init: At 3FFE0440 len 00003AE0 (14 KiB): D/IRAM[0m
+[0;32mI (569) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM[0m
+[0;32mI (575) heap_init: At 40098548 len 00007AB8 (30 KiB): IRAM[0m
+[0;32mI (582) spi_flash: detected chip: generic[0m
+[0;32mI (584) spi_flash: flash io: dio[0m
+[0;32mI (588) main_task: Started on CPU0[0m
+[0;32mI (588) main_task: Calling app_main()[0m
+[0;32mI (608) SUNGROW_ETH_AP: Keine gespeicherte Konfiguration, nutze Standardwerte.[0m
+[0;32mI (608) SUNGROW_ETH_AP: Wechselrichter-Profil: Sungrow SH-RT (Hybrid)[0m
+[0;32mI (618) SUNGROW_ETH_AP: Konfiguration: Sungrow-IP = 192.168.188.60, Wallbox-IP = (aus)[0m
+[0;32mI (758) esp_eth.netif.netif_glue: 68:09:47:d1:17:b7[0m
+[0;32mI (758) esp_eth.netif.netif_glue: ethernet attached to netif[0m
+[0;32mI (758) SUNGROW_ETH_AP: Starte Ethernet (esp_eth_start)...[0m
+[0;32mI (4758) SUNGROW_ETH_AP: esp_eth_start fertig.[0m
+[0;32mI (4758) SUNGROW_ETH_AP: Ethernet-Init abgeschlossen, starte WLAN...[0m
+[0;32mI (4768) wifi:wifi driver task: 3ffc6358, prio:23, stack:6656, core=0[0m
+E BOD: Brownout detector was triggered
+
+
+ets Jun  8 2016 00:22:57
+
+rst:0x3 (SW_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0030,len:6280
+load:0x40078000,len:15836
+ho 0 tail 12 room 4
+load:0x40080400,len:3920
+entry 0x40080644
+[0;32mI (56) boot: ESP-IDF v5.5.5-dirty 2nd stage bootloader[0m
+[0;32mI (56) boot: compile time Nov 18 2026 15:43:35[0m
+[0;32mI (56) boot: Multicore bootloader[0m
+[0;32mI (59) boot: chip revision: v1.1[0m
+[0;32mI (62) boot.esp32: SPI Speed      : 40MHz[0m
+[0;32mI (65) boot.esp32: SPI Mode       : DIO[0m
+[0;32mI (69) boot.esp32: SPI Flash Size : 4MB[0m
+[0;32mI (72) boot: Enabling RNG early entropy source...[0m
+[0;32mI (77) boot: Partition Table:[0m
+[0;32mI (80) boot: ## Label            Usage          Type ST Offset   Length[0m
+[0;32mI (86) boot:  0 nvs              WiFi data        01 02 00009000 00006000[0m
+[0;32mI (92) boot:  1 otadata          OTA data         01 00 0000f000 00002000[0m
+[0;32mI (99) boot:  2 phy_init         RF data          01 01 00011000 00001000[0m
+[0;32mI (105) boot:  3 ota_0            OTA app          00 10 00020000 001e0000[0m
+[0;32mI (112) boot:  4 ota_1            OTA app          00 11 00200000 001e0000[0m
+[0;32mI (119) boot: End of partition table[0m
+[0;32mI (122) esp_image: segment 0: paddr=00020020 vaddr=3f400020 size=2c6d4h (181972) map[0m
+[0;32mI (192) esp_image: segment 1: paddr=0004c6fc vaddr=3ffb0000 size=0391ch ( 14620) load[0m
+[0;32mI (197) esp_image: segment 2: paddr=00050020 vaddr=400d0020 size=a83b8h (689080) map[0m
+[0;32mI (433) esp_image: segment 3: paddr=000f83e0 vaddr=3ffb391c size=00bdch (  3036) load[0m
+[0;32mI (435) esp_image: segment 4: paddr=000f8fc4 vaddr=40080000 size=18548h ( 99656) load[0m
+[0;32mI (476) esp_image: segment 5: paddr=00111514 vaddr=50000000 size=00020h (    32) load[0m
+[0;32mI (488) boot: Loaded app from partition at offset 0x20000[0m
+[0;32mI (489) boot: Disabling RNG early entropy source...[0m
+[0;32mI (499) cpu_start: Multicore app[0m
+[0;32mI (507) cpu_start: GPIO 3 and 1 are used as console UART I/O pins[0m
+[0;32mI (508) cpu_start: Pro cpu start user code[0m
+[0;32mI (508) cpu_start: cpu freq: 160000000 Hz[0m
+[0;32mI (510) app_init: Application information:[0m
+[0;32mI (513) app_init: Project name:     sungrow_wt32[0m
+[0;32mI (518) app_init: App version:      2561442-dirty[0m
+[0;32mI (522) app_init: Compile time:     Nov 25 2026 17:03:13[0m
+[0;32mI (527) app_init: ELF file SHA256:  0c9535cf7...[0m
+[0;32mI (531) app_init: ESP-IDF:          v5.5.5-dirty[0m
+[0;32mI (536) efuse_init: Min chip rev:     v0.0[0m
+[0;32mI (540) efuse_init: Max chip rev:     v3.99 [0m
+[0;32mI (544) efuse_init: Chip rev:         v1.1[0m
+[0;32mI (548) heap_init: Initializing. RAM available for dynamic allocation:[0m
+[0;32mI (554) heap_init: At 3FFAE6E0 len 00001920 (6 KiB): DRAM[0m
+[0;32mI (559) heap_init: At 3FFB9FE0 len 00026020 (152 KiB): DRAM[0m
+[0;32mI (564) heap_init: At 3FFE0440 len 00003AE0 (14 KiB): D/IRAM[0m
+[0;32mI (569) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM[0m
+[0;32mI (575) heap_init: At 40098548 len 00007AB8 (30 KiB): IRAM[0m
+[0;32mI (582) spi_flash: detected chip: generic[0m
+[0;32mI (584) spi_flash: flash io: dio[0m
+[0;32mI (588) main_task: Started on CPU0[0m
+[0;32mI (588) main_task: Calling app_main()[0m
+[0;32mI (608) SUNGROW_ETH_AP: Keine gespeicherte Konfiguration, nutze Standardwerte.[0m
+[0;32mI (608) SUNGROW_ETH_AP: Wechselrichter-Profil: Sungrow SH-RT (Hybrid)[0m
+[0;32mI (618) SUNGROW_ETH_AP: Konfiguration: Sungrow-IP = 192.168.188.60, Wallbox-IP = (aus)[0m
+[0;32mI (758) esp_eth.netif.netif_glue: 68:09:47:d1:17:b7[0m
+[0;32mI (758) esp_eth.netif.netif_glue: ethernet attached to netif[0m
+[0;32mI (758) SUNGROW_ETH_AP: Starte Ethernet (esp_eth_start)...[0m
+E BOD: Brownout detector was triggered
+
+
+ets Jun  8 2016 00:22:57
+
+rst:0x3 (SW_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0030,len:6280
+load:0x40078000,len:15836
+ho 0 tail 12 room 4
+load:0x40080400,len:3920
+entry 0x40080644
+[0;32mI (56) boot: ESP-IDF v5.5.5-dirty 2nd stage bootloader[0m
+[0;32mI (56) boot: compile time Nov 18 2026 15:43:35[0m
+[0;32mI (56) boot: Multicore bootloader[0m
+[0;32mI (59) boot: chip revision: v1.1[0m
+[0;32mI (62) boot.esp32: SPI Speed      : 40MHz[0m
+[0;32mI (65) boot.esp32: SPI Mode       : DIO[0m
+[0;32mI (69) boot.esp32: SPI Flash Size : 4MB[0m
+[0;32mI (72) boot: Enabling RNG early entropy source...[0m
+[0;32mI (77) boot: Partition Table:[0m
+[0;32mI (80) boot: ## Label            Usage          Type ST Offset   Length[0m
+[0;32mI (86) boot:  0 nvs              WiFi data        01 02 00009000 00006000[0m
+[0;32mI (92) boot:  1 otadata          OTA data         01 00 0000f000 00002000[0m
+[0;32mI (99) boot:  2 phy_init         RF data          01 01 00011000 00001000[0m
+[0;32mI (105) boot:  3 ota_0            OTA app          00 10 00020000 001e0000[0m
+[0;32mI (112) boot:  4 ota_1            OTA app     

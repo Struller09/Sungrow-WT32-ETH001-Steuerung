@@ -1,0 +1,42 @@
+Command: ninja all
+[1/9] Performing build step for 'bootloader'
+[1/1] C:\WINDOWS\system32\cmd.exe /C "cd /D C:\Users\Striker\ESP32_ETH\Sungrow-WT32-ETH001-Steuerung\build\bootloader\esp-idf\esptool_py && C:\Espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe C:/Espressif/frameworks/esp-idf-v5.5.5/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x1000 C:/Users/Striker/ESP32_ETH/Sungrow-WT32-ETH001-Steuerung/build/bootloader/bootloader.bin"
+Bootloader binary size 0x6610 bytes. 0x9f0 bytes (9%) free.
+[2/9] No install step for 'bootloader'
+[3/9] Completed 'bootloader'
+[4/9] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/main.c.obj
+C:/Users/Striker/ESP32_ETH/Sungrow-WT32-ETH001-Steuerung/main/main.c:1694:21: warning: 's_oc_fd' defined but not used [-Wunused-variable]
+ 1694 | static int          s_oc_fd = -1;
+      |                     ^~~~~~~
+C:/Users/Striker/ESP32_ETH/Sungrow-WT32-ETH001-Steuerung/main/main.c:1571:12: warning: 'oc_handle' defined but not used [-Wunused-function]
+ 1571 | static int oc_handle(oc_state_t *s, const char *js, int len, char *out, int outsz, int64_t now_ms) {
+      |            ^~~~~~~~~
+C:/Users/Striker/ESP32_ETH/Sungrow-WT32-ETH001-Steuerung/main/main.c:1515:12: warning: 'oc_next_call' defined but not used [-Wunused-function]
+ 1515 | static int oc_next_call(oc_state_t *s, char *out, int outsz) {
+      |            ^~~~~~~~~~~~
+C:/Users/Striker/ESP32_ETH/Sungrow-WT32-ETH001-Steuerung/main/main.c:1501:12: warning: 'oc_build_remote_stop' defined but not used [-Wunused-function]
+ 1501 | static int oc_build_remote_stop(oc_state_t *s, char *out, int outsz) {
+      |            ^~~~~~~~~~~~~~~~~~~~
+C:/Users/Striker/ESP32_ETH/Sungrow-WT32-ETH001-Steuerung/main/main.c:1497:12: warning: 'oc_build_remote_start' defined but not used [-Wunused-function]
+ 1497 | static int oc_build_remote_start(oc_state_t *s, char *out, int outsz) {
+      |            ^~~~~~~~~~~~~~~~~~~~~
+C:/Users/Striker/ESP32_ETH/Sungrow-WT32-ETH001-Steuerung/main/main.c:1485:12: warning: 'oc_build_set_limit' defined but not used [-Wunused-function]
+ 1485 | static int oc_build_set_limit(oc_state_t *s, char *out, int outsz, int amps, const char *purpose) {
+      |            ^~~~~~~~~~~~~~~~~~
+C:/Users/Striker/ESP32_ETH/Sungrow-WT32-ETH001-Steuerung/main/main.c:1444:13: warning: 'oc_on_disconnect' defined but not used [-Wunused-function]
+ 1444 | static void oc_on_disconnect(oc_state_t *s) {
+      |             ^~~~~~~~~~~~~~~~
+C:/Users/Striker/ESP32_ETH/Sungrow-WT32-ETH001-Steuerung/main/main.c:1433:13: warning: 'oc_on_connect' defined but not used [-Wunused-function]
+ 1433 | static void oc_on_connect(oc_state_t *s, const char *cp_id, int64_t now_ms) {
+      |             ^~~~~~~~~~~~~
+[5/9] Linking C static library esp-idf\main\libmain.a
+[6/9] Generating esp-idf/esp_system/ld/sections.ld
+[7/9] Linking CXX executable sungrow_wt32.elf
+[8/9] Generating binary image from built executable
+esptool.py v4.12.0
+Creating esp32 image...
+Merged 2 ELF sections
+Successfully created esp32 image.
+Generated C:/Users/Striker/ESP32_ETH/Sungrow-WT32-ETH001-Steuerung/build/sungrow_wt32.bin
+[9/9] C:\WINDOWS\system32\cmd.exe /C "cd /D C:\Users\Striker\ESP32_ETH\Sungrow-WT32-ETH001-Steuerung\build\esp-idf\esptool_py && C:\Espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe C:/Espressif/frameworks/esp-idf-v5.5.5/components/partition_table/check_sizes.py --offset 0x8000 partition --type app C:/Users/Striker/ESP32_ETH/Sungrow-WT32-ETH001-Steuerung/build/partition_table/partition-table.bin C:/Users/Striker/ESP32_ETH/Sungrow-WT32-ETH001-Steuerung/build/sungrow_wt32.bin"
+sungrow_wt32.bin binary size 0xedcf0 bytes. Smallest app partition is 0x1e0000 bytes. 0xf2310 bytes (50%) free.

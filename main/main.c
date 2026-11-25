@@ -17,6 +17,7 @@
 #include "esp_http_server.h"
 #include "esp_ota_ops.h"
 #include "esp_system.h"
+#include "esp_mac.h"
 #include <errno.h>
 #include <fcntl.h>
 #include "lwip/sockets.h"
@@ -25,6 +26,8 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <limits.h>
+#include <time.h>
+#include "esp_sntp.h"
 
 static const char *TAG = "SUNGROW_ETH_AP";
 
@@ -37,57 +40,125 @@ static const char *TAG = "SUNGROW_ETH_AP";
 #define SUNGROW_SLAVE_ID     1
 
 // WLAN-Hotspot (SoftAP)
-#define AP_WIFI_SSID         "Sungrow-Steuerung"
+#define AP_WIFI_SSID_PREFIX  "SG-Steuer"   // SSID = Prefix-MAC (z. B. SG-Steuer-A1B2C3D4E5F6)
 #define AP_WIFI_PASS         "sungrow2026"    // Mindestens 8 Zeichen!
 #define AP_WIFI_CHANNEL      6
 #define AP_MAX_CONN          4
 
-// Sungrow Modbus Register (0-basiert; falls Fehler, 13023 bzw. 13100 testen)
-#define REG_BATTERY_SOC      13022            // Input Register (FC 0x04), Faktor 0.1 (%)
-#define REG_BACKUP_SOC       13099            // Holding Register (FC 0x03 / 0x06), Faktor 1 (%)
+// =========================================================
+//  Wechselrichter-Profile
+//  Alle Register eines Wechselrichter-Typs stehen in einem Profil. Ein weiterer Typ wird
+//  in profiles_init() mit prof_new() angelegt; nicht gesetzte Register gelten als "nicht
+//  vorhanden" (NOREG) und werden nicht abgefragt (Anzeige "-").
+//  Adressen 0-basiert (Protokolladresse - 1). Auswahl in den Optionen, Schlüssel "inv_type".
+// =========================================================
+#define NOREG  0xFFFF
 
-// Batterie-Strom (0,1 A) und -Leistung (W): zwei aufeinanderfolgende Input Register (FC 0x04)
-// Laut Sungrow-Protokoll 1-basiert 13021 / 13022 -> hier 0-basiert 13020 / 13021
-#define REG_BATTERY_CURRENT  13020
-#define REG_BATTERY_POWER    13021
-// Richtung (Laden/Entladen) kommt aus dem Betriebszustand der Batterie (Input Register 13000):
-// Bit 1 (Wert 2) = lädt, Bit 2 (Wert 4) = entlädt.
-#define REG_RUNNING_STATE    13000
-// Nur als Rückfall, falls keines der beiden Bits gesetzt ist: Vorzeichen des Batteriestroms.
-// 1 = negativ bedeutet Laden, 0 = positiv bedeutet Laden
-#define BATTERY_CURRENT_NEG_IS_CHARGING  0
+typedef struct {
+    // Batterie
+    uint16_t bat_soc;         // Akkustand, U16, 0,1 %
+    uint16_t backup_soc;      // Notreserve (lesen: FC03, schreiben: FC06), U16, 1 %
+    uint16_t bat_current;     // Batteriestrom (0,1 A); direkt dahinter folgt die Leistung (W)
+    uint16_t run_state;       // Betriebszustand, Bits: 0x0002 lädt, 0x0004 entlädt
+    uint16_t bat_voltage;     // U16, 0,1 V
+    uint16_t bat_soh;         // U16, 0,1 %; direkt dahinter die Temperatur (S16, 0,1 Grad)
+    uint16_t bat_day_charge;  // heute geladen, U16, 0,1 kWh
+    uint16_t max_soc;         // Ladegrenze (FC03/FC06), 0,1 %; Min-SOC muss direkt dahinter liegen
+    uint16_t min_soc;         // Entladegrenze, 0,1 %
+    // PV, Netz, Haus
+    uint16_t pv_power;        // U32, W
+    uint16_t grid_power;      // S32, W
+    uint16_t load_power;      // S32, W
+    uint16_t grid_state;      // 0x55 = am Netz, 0xAA = Inselbetrieb
+    uint16_t sys_state;       // Systemzustand, U16
+    uint16_t self_use;        // Eigenverbrauchsquote heute, U16, 0,1 %
+    // Energien: je Tag (U16) + Gesamt (U32), 0,1 kWh, 3 Register
+    uint16_t pv_day;
+    uint16_t direct_energy;
+    uint16_t discharge_energy;
+    uint16_t import_energy;
+    uint16_t export_energy;
+    // Netzqualität, Sonstiges
+    uint16_t grid_freq;       // U16, 0,1 Hz
+    uint16_t grid_volt;       // 3 x U16, 0,1 V
+    uint16_t phase_i;         // 3 x S16, 0,1 A
+    uint16_t inv_temp;        // S16, 0,1 Grad
+    uint16_t co2;             // U32, 0,1 kg
+    uint16_t faults;          // 14 Gruppen zu je 32 Bit (28 Register)
+    uint16_t clock;           // Holding: Jahr, Monat, Tag, Stunde, Minute, Sekunde
+    uint16_t dev_type;        // Gerätetyp-Code
+    uint16_t serial;          // 10 Register ASCII
+    uint16_t fw;              // 15 Register ASCII
+} inv_regs_t;
 
-// Hausverbrauch (Input Register, 0-basiert; im Sungrow-Protokoll steht jeweils die Adresse + 1)
-#define REG_LOAD_POWER       13007   // S32, W (niederwertiges Wort zuerst)
-#define REG_DIRECT_ENERGY    13016   // Tag (U16) + Gesamt (U32), 0,1 kWh: direkt aus PV verbraucht
-#define REG_DISCHARGE_ENERGY 13025   // Tag (U16) + Gesamt (U32), 0,1 kWh: aus der Batterie entladen
-#define REG_IMPORT_ENERGY    13035   // Tag (U16) + Gesamt (U32), 0,1 kWh: aus dem Netz bezogen
-#define REG_CLOCK            4999    // Holding: Jahr, Monat, Tag, Stunde, Minute, Sekunde der Wechselrichter-Uhr
+typedef struct {
+    const char *id;           // im NVS gespeichert
+    const char *name;         // Anzeige in den Optionen
+    uint16_t    port;
+    uint8_t     unit_id;
+    bool grid_export_positive;      // Netzleistung: positiver Rohwert = Einspeisung
+    bool bat_current_neg_charging;  // Rückfall für die Batterierichtung: negativer Strom = Laden
+    inv_regs_t  regs;
+} inv_profile_t;
 
-// Weitere Wechselrichter-Werte (0-basiert = Protokolladresse - 1)
-#define REG_SYS_STATE        12999   // Systemzustand (U16)
-#define REG_PV_DAY           13001   // PV-Erzeugung: Tag (U16) + Gesamt (U32), 0,1 kWh [3 Register]
-#define REG_PV_POWER         5016    // PV-Leistung, U32, W
-#define REG_GRID_POWER       13009   // Netzleistung, S32, W
-#define REG_CO2              13014   // CO2-Einsparung, U32, 0,1 kg
-#define REG_BAT_VOLTAGE      13019   // Batteriespannung, U16, 0,1 V
-#define REG_BAT_SOH          13023   // Batterie-Gesundheit, U16, 0,1 % (danach: Temperatur, S16, 0,1 Grad)
-#define REG_SELF_USE         13028   // Eigenverbrauchsquote heute, U16, 0,1 %
-#define REG_GRID_STATE       13029   // 0x55 = am Netz, 0xAA = Inselbetrieb
-#define REG_PHASE_I          13030   // Phasenströme, 3 x S16, 0,1 A
-#define REG_BAT_DAY_CHARGE   13039   // Batterie geladen heute, U16, 0,1 kWh
-#define REG_EXPORT_ENERGY    13044   // Einspeisung: Tag (U16) + Gesamt (U32), 0,1 kWh [3 Register]
-#define REG_FAULTS           13049   // 14 Fehler-/Alarmgruppen zu je 32 Bit [28 Register]
-#define REG_GRID_FREQ        5035    // Netzfrequenz, U16, 0,1 Hz
-#define REG_GRID_VOLT        5018    // Netzspannungen, 3 x U16, 0,1 V
-#define REG_INV_TEMP         5007    // Innentemperatur, S16, 0,1 Grad
-#define REG_DEV_TYPE         4999    // Gerätetyp-Code (Input Register)
-#define REG_SERIAL           4989    // Seriennummer, 10 Register ASCII
-#define REG_FW_ARM           4953    // Firmware, 15 Register ASCII
-#define REG_MAX_SOC          13057   // Holding: Max-SOC, U16, 0,1 % (70.0..100.0)
-#define REG_MIN_SOC          13058   // Holding: Min-SOC, U16, 0,1 % (0.0..50.0)
-// Netzleistung: 1 = positiver Rohwert bedeutet Einspeisung (negativ = Netzbezug), 0 = umgekehrt
-#define GRID_RAW_POSITIVE_IS_EXPORT  1
+#define MAX_PROFILES 8
+static inv_profile_t s_profiles[MAX_PROFILES];
+static int s_nprof = 0;
+static const inv_profile_t *g_prof = &s_profiles[0];   // aktives Profil
+#define RG (g_prof->regs)
+
+static inv_profile_t *prof_new(const char *id, const char *name, uint16_t port, uint8_t unit_id) {
+    if (s_nprof >= MAX_PROFILES) return NULL;
+    inv_profile_t *p = &s_profiles[s_nprof++];
+    memset(p, 0, sizeof(*p));
+    memset(&p->regs, 0xFF, sizeof(p->regs));      // alle Register = NOREG
+    p->id = id;
+    p->name = name;
+    p->port = port;
+    p->unit_id = unit_id;
+    return p;
+}
+
+static void profiles_init(void) {
+    // ---- Sungrow SH-RT (Hybrid), Modbus-TCP ----
+    inv_profile_t *p = prof_new("sungrow_sh", "Sungrow SH-RT (Hybrid)", SUNGROW_PORT, SUNGROW_SLAVE_ID);
+    p->grid_export_positive = true;
+    p->bat_current_neg_charging = false;
+    p->regs.bat_soc         = 13022;
+    p->regs.backup_soc      = 13099;
+    p->regs.bat_current     = 13020;   // + Leistung in 13021
+    p->regs.run_state       = 13000;
+    p->regs.bat_voltage     = 13019;
+    p->regs.bat_soh         = 13023;   // + Temperatur in 13024
+    p->regs.bat_day_charge  = 13039;
+    p->regs.max_soc         = 13057;
+    p->regs.min_soc         = 13058;
+    p->regs.pv_power        = 5016;
+    p->regs.grid_power      = 13009;
+    p->regs.load_power      = 13007;
+    p->regs.grid_state      = 13029;
+    p->regs.sys_state       = 12999;
+    p->regs.self_use        = 13028;
+    p->regs.pv_day          = 13001;
+    p->regs.direct_energy   = 13016;
+    p->regs.discharge_energy = 13025;
+    p->regs.import_energy   = 13035;
+    p->regs.export_energy   = 13044;
+    p->regs.grid_freq       = 5035;
+    p->regs.grid_volt       = 5018;
+    p->regs.phase_i         = 13030;
+    p->regs.inv_temp        = 5007;
+    p->regs.co2             = 13014;
+    p->regs.faults          = 13049;
+    p->regs.clock           = 4999;
+    p->regs.dev_type        = 4999;
+    p->regs.serial          = 4989;
+    p->regs.fw              = 4953;
+
+    // Weitere Typen hier ergänzen, z. B.:
+    //   inv_profile_t *q = prof_new("beispiel", "Hersteller Modell", 502, 1);
+    //   q->regs.bat_soc = ...;   (nicht gesetzte Register bleiben NOREG)
+}
 
 // Wallbox Sungrow AC011E-01 / AC22E-01 (Modbus TCP über eigene IP, hier nur lesend)
 #define WALLBOX_PORT         502
@@ -124,6 +195,7 @@ static const char *TAG = "SUNGROW_ETH_AP";
 // ---- Laufzeit-Konfiguration (aus NVS geladen) ----
 static char g_mb_ip[16]                = DEFAULT_SUNGROW_IP;
 static char g_wb_ip[16]                = "";   // leer = Wallbox-Abfrage aus
+static uint32_t g_ocpp_on              = 1;    // OCPP-Server (Wallbox verbindet sich per WebSocket)
 static char g_web_pass[PASS_MAX_LEN+1] = DEFAULT_WEB_PASS;
 static volatile uint32_t g_poll_interval_s = DEFAULT_POLL_INTERVAL_S;
 static TaskHandle_t s_modbus_task = NULL;
@@ -136,6 +208,7 @@ static int s_run_state = -1;                 // zuletzt gelesener Batterie-Betri
 
 // ---- Modbus-Zustand ----
 static esp_netif_t *s_eth_netif = NULL;
+static char s_ap_ssid[33] = AP_WIFI_SSID_PREFIX;   // WLAN-Name des Hotspots (mit MAC)
 static char s_eth_ip[16] = "";              // per DHCP erhaltene Ethernet-IP ("" = keine)
 static volatile bool s_modbus_ready = false;
 static SemaphoreHandle_t s_mb_mutex = NULL;     // serialisiert alle Modbus-Zugriffe
@@ -264,6 +337,15 @@ static void config_load(void) {
     len = sizeof(g_wb_ip);
     if (nvs_get_str(h, "wb_ip", g_wb_ip, &len) != ESP_OK) {
         g_wb_ip[0] = '\0';
+    }
+    uint32_t oc_on = 1;
+    if (nvs_get_u32(h, "ocpp_on", &oc_on) == ESP_OK) g_ocpp_on = oc_on ? 1 : 0;
+    char tid[24] = "";
+    len = sizeof(tid);
+    if (nvs_get_str(h, "inv_type", tid, &len) == ESP_OK) {
+        for (int i = 0; i < s_nprof; i++) {
+            if (strcmp(s_profiles[i].id, tid) == 0) { g_prof = &s_profiles[i]; break; }
+        }
     }
     uint32_t v32 = 0;
     if (nvs_get_u32(h, "cap10", &v32) == ESP_OK && v32 <= 2000)   g_bat_kwh10 = v32;
@@ -511,7 +593,8 @@ static esp_err_t mb_transaction(mb_dev_t *dev, uint8_t fc, uint16_t reg, uint16_
 
 static float modbus_read_battery_soc_locked(void) {
     uint16_t raw = 0;
-    esp_err_t err = mb_transaction(&s_inv, 0x04, REG_BATTERY_SOC, 1, &raw);
+    if (RG.bat_soc == NOREG) return -1.0f;
+    esp_err_t err = mb_transaction(&s_inv, 0x04, RG.bat_soc, 1, &raw);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Fehler beim Lesen des Batterie-SOC: 0x%x", err);
         return -1.0f;
@@ -521,7 +604,8 @@ static float modbus_read_battery_soc_locked(void) {
 
 static int modbus_read_backup_soc_locked(void) {
     uint16_t raw = 0;
-    esp_err_t err = mb_transaction(&s_inv, 0x03, REG_BACKUP_SOC, 1, &raw);
+    if (RG.backup_soc == NOREG) return -1;
+    esp_err_t err = mb_transaction(&s_inv, 0x03, RG.backup_soc, 1, &raw);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Fehler beim Lesen des Backup-SOC: 0x%x", err);
         return -1;
@@ -534,12 +618,13 @@ static int modbus_read_backup_soc_locked(void) {
 static bool modbus_read_battery_power_locked(int *watts) {
     uint16_t r[2] = { 0, 0 };   // r[0] = Strom (0,1 A), r[1] = Leistung (W)
     uint16_t state = 0;
-    esp_err_t err = mb_transaction(&s_inv, 0x04, REG_BATTERY_CURRENT, 2, r);
+    if (RG.bat_current == NOREG) return false;
+    esp_err_t err = mb_transaction(&s_inv, 0x04, RG.bat_current, 2, r);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Fehler beim Lesen der Batterieleistung: 0x%x", err);
         return false;
     }
-    bool have_state = (mb_transaction(&s_inv, 0x04, REG_RUNNING_STATE, 1, &state) == ESP_OK);
+    bool have_state = (RG.run_state != NOREG) && (mb_transaction(&s_inv, 0x04, RG.run_state, 1, &state) == ESP_OK);
     s_run_state = have_state ? (int)state : -1;
 
     int current = (int)(int16_t)r[0];
@@ -559,7 +644,7 @@ static bool modbus_read_battery_power_locked(int *watts) {
         charging = false;
     } else {
         // Rückfall: Richtung aus dem Vorzeichen des Batteriestroms
-        charging = BATTERY_CURRENT_NEG_IS_CHARGING ? (current < 0) : (current > 0);
+        charging = g_prof->bat_current_neg_charging ? (current < 0) : (current > 0);
     }
     *watts = charging ? power : -power;
     return true;
@@ -593,11 +678,12 @@ static soc_cache_t cache_get(void) {
 static esp_err_t set_sungrow_backup_soc(uint16_t soc_percent) {
     if (soc_percent > 100) return ESP_ERR_INVALID_ARG;
     if (!s_modbus_ready) return ESP_ERR_INVALID_STATE;
+    if (RG.backup_soc == NOREG) return ESP_ERR_NOT_SUPPORTED;
 
     if (xSemaphoreTake(s_mb_mutex, pdMS_TO_TICKS(15000)) != pdTRUE) return ESP_ERR_TIMEOUT;
 
     uint16_t echo = 0;
-    esp_err_t err = mb_transaction(&s_inv, 0x06, REG_BACKUP_SOC, soc_percent, &echo);
+    esp_err_t err = mb_transaction(&s_inv, 0x06, RG.backup_soc, soc_percent, &echo);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "Backup-SOC erfolgreich auf %u%% gesetzt.", (unsigned)soc_percent);
         // Zur Kontrolle sofort zurücklesen und Cache aktualisieren
@@ -663,6 +749,7 @@ static uint32_t u32_le(const uint16_t *r) {
 
 // Lesen am Wechselrichter, true bei Erfolg
 static bool rd(uint8_t fc, uint16_t reg, uint16_t n, uint16_t *r) {
+    if (reg == NOREG) return false;     // vom Profil nicht unterstützt
     return mb_transaction(&s_inv, fc, reg, n, r) == ESP_OK;
 }
 
@@ -754,36 +841,36 @@ static void inverter_poll(void) {
     if (COMM_FAIL()) goto done;
 
     e.run_state = (s_run_state >= 0) ? s_run_state : UNK;
-    e.load_w     = rd(0x04, REG_LOAD_POWER, 2, r) ? (int)(int32_t)u32_le(r) : UNK;
-    e.pv_power_w = rd(0x04, REG_PV_POWER, 2, r)   ? (int)u32_le(r) : UNK;
-    e.grid_state = rd(0x04, REG_GRID_STATE, 1, r) ? (int)r[0] : UNK;
-    e.sys_state  = rd(0x04, REG_SYS_STATE, 1, r)  ? (int)r[0] : UNK;
-    if (rd(0x04, REG_GRID_POWER, 2, r)) {
+    e.load_w     = rd(0x04, RG.load_power, 2, r) ? (int)(int32_t)u32_le(r) : UNK;
+    e.pv_power_w = rd(0x04, RG.pv_power, 2, r)   ? (int)u32_le(r) : UNK;
+    e.grid_state = rd(0x04, RG.grid_state, 1, r) ? (int)r[0] : UNK;
+    e.sys_state  = rd(0x04, RG.sys_state, 1, r)  ? (int)r[0] : UNK;
+    if (rd(0x04, RG.grid_power, 2, r)) {
         // Rohwert mit Vorzeichen; Ergebnis: > 0 = Netzbezug, < 0 = Einspeisung
         int raw = (int)(int32_t)u32_le(r);
-        e.grid_w = GRID_RAW_POSITIVE_IS_EXPORT ? -raw : raw;
+        e.grid_w = g_prof->grid_export_positive ? -raw : raw;
     } else {
         e.grid_w = UNK;
     }
     if (COMM_FAIL() || !slow) goto done;
 
     // ---- langsam veränderliche Werte (jede Minute) ----
-    if (rd(0x04, REG_PV_DAY, 3, r)) {
+    if (rd(0x04, RG.pv_day, 3, r)) {
         e.pv_day_dkwh = r[0];
         e.pv_total_dkwh = (int)u32_le(&r[1]);
     } else {
         e.pv_day_dkwh = e.pv_total_dkwh = UNK;
     }
-    ok_dir = read_energy_triple(REG_DIRECT_ENERGY, &e.day_direct_dkwh, &tot_direct);
-    ok_dis = read_energy_triple(REG_DISCHARGE_ENERGY, &e.day_dis_dkwh, &tot_dis);
-    ok_imp = read_energy_triple(REG_IMPORT_ENERGY, &e.imp_day_dkwh, &tot_imp);
+    ok_dir = read_energy_triple(RG.direct_energy, &e.day_direct_dkwh, &tot_direct);
+    ok_dis = read_energy_triple(RG.discharge_energy, &e.day_dis_dkwh, &tot_dis);
+    ok_imp = read_energy_triple(RG.import_energy, &e.imp_day_dkwh, &tot_imp);
     e.imp_total_dkwh = tot_imp;
-    read_energy_triple(REG_EXPORT_ENERGY, &e.exp_day_dkwh, &e.exp_total_dkwh);
+    read_energy_triple(RG.export_energy, &e.exp_day_dkwh, &e.exp_total_dkwh);
     if (COMM_FAIL()) goto done;
 
     // Uhr des Wechselrichters und Jahresverbrauch (aus den Gesamtzählern)
     e.year_cons_dkwh = UNK;
-    if (rd(0x03, REG_CLOCK, 6, r)) {
+    if (rd(0x03, RG.clock, 6, r)) {
         for (int i = 0; i < 6; i++) e.clock[i] = r[i];
         e.clock_valid = true;
     } else {
@@ -803,16 +890,16 @@ static void inverter_poll(void) {
     if (COMM_FAIL()) goto done;
 
     // Batterie
-    e.bat_v_dv = rd(0x04, REG_BAT_VOLTAGE, 1, r) ? (int)r[0] : UNK;
-    if (rd(0x04, REG_BAT_SOH, 2, r)) {
+    e.bat_v_dv = rd(0x04, RG.bat_voltage, 1, r) ? (int)r[0] : UNK;
+    if (rd(0x04, RG.bat_soh, 2, r)) {
         e.bat_soh_d = r[0];
         e.bat_temp_dc = (int)(int16_t)r[1];
     } else {
         e.bat_soh_d = e.bat_temp_dc = UNK;
     }
-    e.bat_day_charge_dkwh = rd(0x04, REG_BAT_DAY_CHARGE, 1, r) ? (int)r[0] : UNK;
-    e.self_use_d = rd(0x04, REG_SELF_USE, 1, r) ? (int)r[0] : UNK;
-    if (rd(0x03, REG_MAX_SOC, 2, r)) {
+    e.bat_day_charge_dkwh = rd(0x04, RG.bat_day_charge, 1, r) ? (int)r[0] : UNK;
+    e.self_use_d = rd(0x04, RG.self_use, 1, r) ? (int)r[0] : UNK;
+    if (rd(0x03, RG.max_soc, 2, r)) {
         e.max_soc_d = r[0];
         e.min_soc_d = r[1];
     } else {
@@ -821,23 +908,23 @@ static void inverter_poll(void) {
     if (COMM_FAIL()) goto done;
 
     // Netz, Temperatur, CO2
-    e.grid_freq_dhz = rd(0x04, REG_GRID_FREQ, 1, r) ? (int)r[0] : UNK;
-    e.inv_temp_dc   = rd(0x04, REG_INV_TEMP, 1, r) ? (int)(int16_t)r[0] : UNK;
-    if (rd(0x04, REG_GRID_VOLT, 3, r)) {
+    e.grid_freq_dhz = rd(0x04, RG.grid_freq, 1, r) ? (int)r[0] : UNK;
+    e.inv_temp_dc   = rd(0x04, RG.inv_temp, 1, r) ? (int)(int16_t)r[0] : UNK;
+    if (rd(0x04, RG.grid_volt, 3, r)) {
         for (int i = 0; i < 3; i++) e.grid_v_dv[i] = r[i];
     } else {
         for (int i = 0; i < 3; i++) e.grid_v_dv[i] = UNK;
     }
-    if (rd(0x04, REG_PHASE_I, 3, r)) {
+    if (rd(0x04, RG.phase_i, 3, r)) {
         for (int i = 0; i < 3; i++) e.phase_i_da[i] = (int)(int16_t)r[i];
     } else {
         for (int i = 0; i < 3; i++) e.phase_i_da[i] = UNK;
     }
-    e.co2_dkg = rd(0x04, REG_CO2, 2, r) ? (int)u32_le(r) : UNK;
+    e.co2_dkg = rd(0x04, RG.co2, 2, r) ? (int)u32_le(r) : UNK;
     if (COMM_FAIL()) goto done;
 
     // Fehler- und Alarmregister (14 x 32 Bit)
-    if (rd(0x04, REG_FAULTS, 28, r)) {
+    if (rd(0x04, RG.faults, 28, r)) {
         for (int i = 0; i < 14; i++) e.faults[i] = u32_le(&r[2 * i]);
         e.faults_valid = true;
     } else {
@@ -847,9 +934,9 @@ static void inverter_poll(void) {
 
     // Geräteinformationen (nur einmal)
     if (!e.dev_valid) {
-        e.dev_type = rd(0x04, REG_DEV_TYPE, 1, r) ? (int)r[0] : UNK;
-        if (rd(0x04, REG_SERIAL, 10, r)) ascii_from_regs(r, 10, e.serial, sizeof(e.serial));
-        if (rd(0x04, REG_FW_ARM, 15, fwr)) ascii_from_regs(fwr, 15, e.fw, sizeof(e.fw));
+        e.dev_type = rd(0x04, RG.dev_type, 1, r) ? (int)r[0] : UNK;
+        if (rd(0x04, RG.serial, 10, r)) ascii_from_regs(r, 10, e.serial, sizeof(e.serial));
+        if (rd(0x04, RG.fw, 15, fwr)) ascii_from_regs(fwr, 15, e.fw, sizeof(e.fw));
         e.dev_valid = true;
     }
     s_last_slow_us = now;
@@ -909,7 +996,7 @@ static void history_tick(void) {
 static void modbus_task(void *arg) {
     xEventGroupWaitBits(s_net_events, ETH_GOT_IP_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
     vTaskDelay(pdMS_TO_TICKS(1000));
-    ESP_LOGI(TAG, "Modbus-TCP-Client bereit (Ziel: %s:%d).", g_mb_ip, SUNGROW_PORT);
+    ESP_LOGI(TAG, "Modbus-TCP-Client bereit (Profil: %s, Ziel: %s:%d).", g_prof->name, g_mb_ip, g_prof->port);
     s_modbus_ready = true;
 
     while (1) {
@@ -1175,13 +1262,629 @@ static esp_err_t json_send(httpd_req_t *req, jb_t *j) {
     return r;
 }
 
+// ===== OCPP-Kern (ohne IDF-Abhängigkeiten, am PC testbar) =====
+// OCPP 1.6-J: Der ESP32 ist der Server (Central System), die Wallbox verbindet sich als Client.
+// Nachrichten: [2,"id","Aktion",{...}] Anfrage, [3,"id",{...}] Antwort, [4,"id","Code","Text",{}] Fehler.
+#define OC_MAXTOK     200
+#define OC_PEND       4
+#define OC_TODO_CFG_INTERVAL  1
+#define OC_TODO_CFG_SAMPLED   2
+#define OC_TODO_TRIGGER_MV    4
+
+typedef struct { char t; int s, e, sz; } jt_t;   // t: 'o' Objekt, 'a' Array, 'k' Schlüssel, 's' Text, 'p' Zahl/Wert
+
+static int oc_json(const char *js, int len, jt_t *tk, int max) {
+    int n = 0, i = 0, sp = 0;
+    int stack[12];
+    char expkey[12];
+    while (i < len) {
+        char c = js[i];
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == ',' || c == ':') { i++; continue; }
+        if (c == '}' || c == ']') {
+            if (sp == 0) return -1;
+            sp--;
+            tk[stack[sp]].e = i + 1;
+            i++;
+            continue;
+        }
+        if (n >= max) return -1;
+        int idx = n++;
+        int par = sp > 0 ? stack[sp - 1] : -1;
+        char type;
+        if (c == '{') type = 'o';
+        else if (c == '[') type = 'a';
+        else if (c == '"') type = 's';
+        else type = 'p';
+        if (par >= 0) {
+            if (tk[par].t == 'o') {
+                if (expkey[sp - 1]) { type = 'k'; tk[par].sz++; expkey[sp - 1] = 0; }
+                else expkey[sp - 1] = 1;
+            } else {
+                tk[par].sz++;
+            }
+        }
+        tk[idx].sz = 0;
+        if (c == '{' || c == '[') {
+            if (sp >= 12) return -1;
+            tk[idx].t = (c == '{') ? 'o' : 'a';
+            tk[idx].s = i;
+            tk[idx].e = len;
+            stack[sp] = idx;
+            expkey[sp] = 1;
+            sp++;
+            i++;
+        } else if (c == '"') {
+            int st = ++i;
+            while (i < len && js[i] != '"') { if (js[i] == '\\' && i + 1 < len) i++; i++; }
+            if (i >= len) return -1;
+            tk[idx].t = (type == 'k') ? 'k' : 's';
+            tk[idx].s = st;
+            tk[idx].e = i;
+            i++;
+        } else {
+            int st = i;
+            while (i < len && js[i] != ',' && js[i] != '}' && js[i] != ']' && js[i] != ' ' && js[i] != '\n' && js[i] != '\r') i++;
+            tk[idx].t = 'p';
+            tk[idx].s = st;
+            tk[idx].e = i;
+        }
+    }
+    return sp == 0 ? n : -1;
+}
+
+static int oc_next(const jt_t *tk, int i) {
+    if (tk[i].t == 'k') return oc_next(tk, i + 1);
+    int n = i + 1;
+    if (tk[i].t == 'o' || tk[i].t == 'a') {
+        for (int k = 0; k < tk[i].sz; k++) n = oc_next(tk, n);
+    }
+    return n;
+}
+
+static int oc_get(const char *js, const jt_t *tk, int obj, const char *key) {
+    if (obj < 0 || tk[obj].t != 'o') return -1;
+    size_t kl = strlen(key);
+    int n = obj + 1;
+    for (int k = 0; k < tk[obj].sz; k++) {
+        if ((size_t)(tk[n].e - tk[n].s) == kl && strncmp(js + tk[n].s, key, kl) == 0) return n + 1;
+        n = oc_next(tk, n);
+    }
+    return -1;
+}
+
+static int oc_elem(const jt_t *tk, int arr, int k) {
+    if (arr < 0 || tk[arr].t != 'a' || k >= tk[arr].sz) return -1;
+    int n = arr + 1;
+    for (int i = 0; i < k; i++) n = oc_next(tk, n);
+    return n;
+}
+
+static bool oc_str(const char *js, const jt_t *tk, int i, char *out, int outsz) {
+    if (i < 0 || (tk[i].t != 's' && tk[i].t != 'p') || outsz < 1) { if (outsz > 0) out[0] = '\0'; return false; }
+    int k = 0;
+    for (int p = tk[i].s; p < tk[i].e && k < outsz - 1; p++) {
+        if (js[p] == '\\' && p + 1 < tk[i].e) p++;
+        out[k++] = js[p];
+    }
+    out[k] = '\0';
+    return true;
+}
+
+static bool oc_num(const char *js, const jt_t *tk, int i, double *v) {
+    char b[24];
+    if (!oc_str(js, tk, i, b, sizeof(b)) || b[0] == '\0') return false;
+    char *e = NULL;
+    double d = strtod(b, &e);
+    if (e == b) return false;
+    *v = d;
+    return true;
+}
+
+typedef struct {
+    char id[16];
+    char action[28];
+    int  arg;
+} oc_pend_t;
+
+typedef struct {
+    bool connected;
+    bool booted;
+    bool cfg_sent;
+    char cp_id[40];
+    char vendor[28], model[28], fw[28], serial[28];
+    char status[24];          // Verfügbar, Preparing, Charging, ...
+    char error[24];
+    int  power_w;             // -1 = unbekannt
+    int  cur_da[3];           // 0,1 A, -1 = unbekannt
+    int  volt_dv[3];          // 0,1 V, -1 = unbekannt
+    int  offered_da;          // angebotener Strom (Current.Offered), 0,1 A
+    int  soc;                 // %, -1 = unbekannt
+    int64_t energy_wh;        // Zählerstand, -1 = unbekannt
+    int64_t ses_start_wh;
+    int64_t ses_wh;           // Energie der laufenden/letzten Ladung
+    int  tx_id;
+    bool in_tx;
+    char id_tag[24];
+    int  limit_a;             // zuletzt bestätigte Strombegrenzung, -1 = unbekannt
+    char last_result[64];     // Ergebnis des letzten Befehls
+    uint32_t rx, txm;
+    int64_t last_rx_ms;
+    int  todo;
+    uint32_t seq;
+    int  next_tx_id;
+    oc_pend_t pend[OC_PEND];
+    void (*time_cb)(char *out, int n);   // aktuelle Zeit als ISO 8601 (UTC)
+} oc_state_t;
+
+static void oc_state_reset_values(oc_state_t *s) {
+    s->power_w = -1;
+    s->offered_da = -1;
+    s->soc = -1;
+    s->energy_wh = -1;
+    s->limit_a = -1;
+    for (int i = 0; i < 3; i++) { s->cur_da[i] = -1; s->volt_dv[i] = -1; }
+}
+
+static void oc_init(oc_state_t *s, void (*time_cb)(char *, int)) {
+    memset(s, 0, sizeof(*s));
+    oc_state_reset_values(s);
+    s->time_cb = time_cb;
+    s->next_tx_id = 1;
+}
+
+static void oc_on_connect(oc_state_t *s, const char *cp_id, int64_t now_ms) {
+    s->connected = true;
+    s->booted = false;
+    s->cfg_sent = false;
+    s->todo = 0;
+    s->last_rx_ms = now_ms;
+    memset(s->pend, 0, sizeof(s->pend));
+    strncpy(s->cp_id, cp_id ? cp_id : "", sizeof(s->cp_id) - 1);
+    s->cp_id[sizeof(s->cp_id) - 1] = '\0';
+}
+
+static void oc_on_disconnect(oc_state_t *s) {
+    s->connected = false;
+    s->booted = false;
+    s->todo = 0;
+}
+
+// Nachrichten-ID aus der Anfrage übernehmen (nur sichere Zeichen)
+static void oc_clean_id(char *id) {
+    for (char *p = id; *p; p++) {
+        if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || *p == '-' || *p == '_' || *p == '.' || *p == ':')) *p = '_';
+    }
+}
+
+static int oc_result(char *out, int outsz, const char *id, const char *payload) {
+    int n = snprintf(out, outsz, "[3,\"%s\",%s]", id, payload);
+    return (n > 0 && n < outsz) ? n : 0;
+}
+
+static void oc_now_iso(const oc_state_t *s, char *b, int n) {
+    if (s->time_cb) s->time_cb(b, n);
+    else snprintf(b, n, "1970-01-01T00:00:00Z");
+}
+
+// Neue Anfrage (Server -> Wallbox) aufbauen und merken
+static int oc_make_call(oc_state_t *s, char *out, int outsz, const char *action, const char *payload, int arg) {
+    char id[16];
+    s->seq++;
+    snprintf(id, sizeof(id), "cs%lu", (unsigned long)s->seq);
+    int slot = (int)(s->seq % OC_PEND);
+    strncpy(s->pend[slot].id, id, sizeof(s->pend[slot].id) - 1);
+    strncpy(s->pend[slot].action, action, sizeof(s->pend[slot].action) - 1);
+    s->pend[slot].id[sizeof(s->pend[slot].id) - 1] = '\0';
+    s->pend[slot].action[sizeof(s->pend[slot].action) - 1] = '\0';
+    s->pend[slot].arg = arg;
+    int n = snprintf(out, outsz, "[2,\"%s\",\"%s\",%s]", id, action, payload);
+    if (n <= 0 || n >= outsz) return 0;
+    s->txm++;
+    return n;
+}
+
+// Strombegrenzung setzen (Ampere, 0 = Laden pausieren). purpose: "TxDefaultProfile" oder "TxProfile"
+static int oc_build_set_limit(oc_state_t *s, char *out, int outsz, int amps, const char *purpose) {
+    char pl[420];
+    if (amps < 0) amps = 0;
+    if (amps > 80) amps = 80;
+    snprintf(pl, sizeof(pl),
+        "{\"connectorId\":1,\"csChargingProfiles\":{\"chargingProfileId\":1,\"stackLevel\":0,"
+        "\"chargingProfilePurpose\":\"%s\",\"chargingProfileKind\":\"Absolute\","
+        "\"chargingSchedule\":{\"chargingRateUnit\":\"A\",\"chargingSchedulePeriod\":[{\"startPeriod\":0,\"limit\":%d}]}}}",
+        purpose && purpose[0] ? purpose : "TxDefaultProfile", amps);
+    return oc_make_call(s, out, outsz, "SetChargingProfile", pl, amps);
+}
+
+static int oc_build_remote_start(oc_state_t *s, char *out, int outsz) {
+    return oc_make_call(s, out, outsz, "RemoteStartTransaction", "{\"connectorId\":1,\"idTag\":\"SUNGROWESP\"}", 0);
+}
+
+static int oc_build_remote_stop(oc_state_t *s, char *out, int outsz) {
+    if (!s->in_tx) return 0;
+    char pl[40];
+    snprintf(pl, sizeof(pl), "{\"transactionId\":%d}", s->tx_id);
+    return oc_make_call(s, out, outsz, "RemoteStopTransaction", pl, 0);
+}
+
+static int oc_build_trigger(oc_state_t *s, char *out, int outsz, const char *what) {
+    char pl[96];
+    snprintf(pl, sizeof(pl), "{\"requestedMessage\":\"%s\",\"connectorId\":1}", what);
+    return oc_make_call(s, out, outsz, "TriggerMessage", pl, 0);
+}
+
+// Nächste automatische Anfrage nach dem Start der Wallbox (0 = nichts zu tun)
+static int oc_next_call(oc_state_t *s, char *out, int outsz) {
+    if (!s->connected) return 0;
+    if (s->todo & OC_TODO_CFG_INTERVAL) {
+        s->todo &= ~OC_TODO_CFG_INTERVAL;
+        return oc_make_call(s, out, outsz, "ChangeConfiguration",
+                            "{\"key\":\"MeterValueSampleInterval\",\"value\":\"10\"}", 0);
+    }
+    if (s->todo & OC_TODO_CFG_SAMPLED) {
+        s->todo &= ~OC_TODO_CFG_SAMPLED;
+        return oc_make_call(s, out, outsz, "ChangeConfiguration",
+            "{\"key\":\"MeterValuesSampledData\",\"value\":\"Energy.Active.Import.Register,Power.Active.Import,Current.Import,Voltage,Current.Offered\"}", 0);
+    }
+    if (s->todo & OC_TODO_TRIGGER_MV) {
+        s->todo &= ~OC_TODO_TRIGGER_MV;
+        return oc_build_trigger(s, out, outsz, "MeterValues");
+    }
+    return 0;
+}
+
+static void oc_meter_values(oc_state_t *s, const char *js, const jt_t *tk, int pl) {
+    int mv = oc_get(js, tk, pl, "meterValue");
+    for (int a = 0; a < (mv >= 0 ? tk[mv].sz : 0); a++) {
+        int m = oc_elem(tk, mv, a);
+        int sv = oc_get(js, tk, m, "sampledValue");
+        for (int b = 0; b < (sv >= 0 ? tk[sv].sz : 0); b++) {
+            int x = oc_elem(tk, sv, b);
+            double v;
+            if (!oc_num(js, tk, oc_get(js, tk, x, "value"), &v)) continue;
+            char meas[40] = "Energy.Active.Import.Register", unit[12] = "", phase[12] = "";
+            char tmp[40];
+            if (oc_str(js, tk, oc_get(js, tk, x, "measurand"), tmp, sizeof(tmp))) strcpy(meas, tmp);
+            oc_str(js, tk, oc_get(js, tk, x, "unit"), unit, sizeof(unit));
+            oc_str(js, tk, oc_get(js, tk, x, "phase"), phase, sizeof(phase));
+            int ph = -1;
+            if (phase[0] == 'L' && phase[1] >= '1' && phase[1] <= '3' && (phase[2] == '\0' || strcmp(phase + 2, "-N") == 0)) ph = phase[1] - '1';
+
+            if (strcmp(meas, "Energy.Active.Import.Register") == 0) {
+                double wh = (strcmp(unit, "kWh") == 0) ? v * 1000.0 : v;
+                s->energy_wh = (int64_t)(wh + 0.5);
+                if (s->in_tx && s->energy_wh >= s->ses_start_wh) s->ses_wh = s->energy_wh - s->ses_start_wh;
+            } else if (strcmp(meas, "Power.Active.Import") == 0 && phase[0] == '\0') {
+                s->power_w = (int)(((strcmp(unit, "kW") == 0) ? v * 1000.0 : v) + 0.5);
+            } else if (strcmp(meas, "Current.Import") == 0 && ph >= 0) {
+                s->cur_da[ph] = (int)(v * 10.0 + 0.5);
+            } else if (strcmp(meas, "Current.Offered") == 0 && phase[0] == '\0') {
+                s->offered_da = (int)(v * 10.0 + 0.5);
+            } else if (strcmp(meas, "Voltage") == 0 && ph >= 0) {
+                s->volt_dv[ph] = (int)(v * 10.0 + 0.5);
+            } else if (strcmp(meas, "SoC") == 0) {
+                s->soc = (int)(v + 0.5);
+            }
+        }
+    }
+}
+
+// Eine empfangene Nachricht verarbeiten. Rückgabe: Länge der Antwort in out (0 = keine Antwort).
+static int oc_handle(oc_state_t *s, const char *js, int len, char *out, int outsz, int64_t now_ms) {
+    jt_t tk[OC_MAXTOK];
+    int nt = oc_json(js, len, tk, OC_MAXTOK);
+    if (nt < 3 || tk[0].t != 'a') return 0;
+    s->rx++;
+    s->last_rx_ms = now_ms;
+    double mt;
+    if (!oc_num(js, tk, 1, &mt)) return 0;
+    char id[40];
+    int i_id = oc_next(tk, 1);
+    oc_str(js, tk, i_id, id, sizeof(id));
+    oc_clean_id(id);
+
+    if ((int)mt == 2) {                         // Anfrage der Wallbox
+        int i_act = oc_next(tk, i_id);
+        int pl = oc_next(tk, i_act);
+        char act[40];
+        oc_str(js, tk, i_act, act, sizeof(act));
+        char pay[200], tmp[40];
+        char now[32];
+        oc_now_iso(s, now, sizeof(now));
+
+        if (strcmp(act, "BootNotification") == 0) {
+            oc_str(js, tk, oc_get(js, tk, pl, "chargePointVendor"), s->vendor, sizeof(s->vendor));
+            oc_str(js, tk, oc_get(js, tk, pl, "chargePointModel"), s->model, sizeof(s->model));
+            oc_str(js, tk, oc_get(js, tk, pl, "firmwareVersion"), s->fw, sizeof(s->fw));
+            oc_str(js, tk, oc_get(js, tk, pl, "chargePointSerialNumber"), s->serial, sizeof(s->serial));
+            s->booted = true;
+            snprintf(pay, sizeof(pay), "{\"currentTime\":\"%s\",\"interval\":120,\"status\":\"Accepted\"}", now);
+            return oc_result(out, outsz, id, pay);
+        }
+        if (strcmp(act, "Heartbeat") == 0) {
+            snprintf(pay, sizeof(pay), "{\"currentTime\":\"%s\"}", now);
+            return oc_result(out, outsz, id, pay);
+        }
+        if (strcmp(act, "StatusNotification") == 0) {
+            double cid = 0;
+            oc_num(js, tk, oc_get(js, tk, pl, "connectorId"), &cid);
+            if ((int)cid >= 1) {
+                if (oc_str(js, tk, oc_get(js, tk, pl, "status"), tmp, sizeof(tmp))) strncpy(s->status, tmp, sizeof(s->status) - 1);
+                if (oc_str(js, tk, oc_get(js, tk, pl, "errorCode"), tmp, sizeof(tmp))) strncpy(s->error, tmp, sizeof(s->error) - 1);
+                if (!s->cfg_sent && s->booted) {          // einmal je Verbindung konfigurieren
+                    s->cfg_sent = true;
+                    s->todo = OC_TODO_CFG_INTERVAL | OC_TODO_CFG_SAMPLED | OC_TODO_TRIGGER_MV;
+                }
+            }
+            return oc_result(out, outsz, id, "{}");
+        }
+        if (strcmp(act, "Authorize") == 0) {
+            return oc_result(out, outsz, id, "{\"idTagInfo\":{\"status\":\"Accepted\"}}");
+        }
+        if (strcmp(act, "StartTransaction") == 0) {
+            double ms = 0;
+            oc_num(js, tk, oc_get(js, tk, pl, "meterStart"), &ms);
+            oc_str(js, tk, oc_get(js, tk, pl, "idTag"), s->id_tag, sizeof(s->id_tag));
+            s->tx_id = (int)((now_ms / 1000) % 100000) * 10 + (s->next_tx_id++ % 10);
+            s->in_tx = true;
+            s->ses_start_wh = (int64_t)ms;
+            s->ses_wh = 0;
+            snprintf(pay, sizeof(pay), "{\"transactionId\":%d,\"idTagInfo\":{\"status\":\"Accepted\"}}", s->tx_id);
+            return oc_result(out, outsz, id, pay);
+        }
+        if (strcmp(act, "StopTransaction") == 0) {
+            double ms = 0;
+            if (oc_num(js, tk, oc_get(js, tk, pl, "meterStop"), &ms) && (int64_t)ms >= s->ses_start_wh) {
+                s->ses_wh = (int64_t)ms - s->ses_start_wh;
+                s->energy_wh = (int64_t)ms;
+            }
+            s->in_tx = false;
+            s->power_w = 0;
+            return oc_result(out, outsz, id, "{\"idTagInfo\":{\"status\":\"Accepted\"}}");
+        }
+        if (strcmp(act, "MeterValues") == 0) {
+            oc_meter_values(s, js, tk, pl);
+            return oc_result(out, outsz, id, "{}");
+        }
+        if (strcmp(act, "DataTransfer") == 0) {
+            return oc_result(out, outsz, id, "{\"status\":\"UnknownVendorId\"}");
+        }
+        if (strcmp(act, "DiagnosticsStatusNotification") == 0 || strcmp(act, "FirmwareStatusNotification") == 0) {
+            return oc_result(out, outsz, id, "{}");
+        }
+        int nn = snprintf(out, outsz, "[4,\"%s\",\"NotImplemented\",\"\",{}]", id);
+        return (nn > 0 && nn < outsz) ? nn : 0;
+    }
+
+    if ((int)mt == 3 || (int)mt == 4) {         // Antwort / Fehler auf eine Anfrage des Servers
+        for (int k = 0; k < OC_PEND; k++) {
+            if (s->pend[k].id[0] == '\0' || strcmp(s->pend[k].id, id) != 0) continue;
+            char res[28] = "";
+            if ((int)mt == 3) {
+                int pl = oc_next(tk, i_id);
+                oc_str(js, tk, oc_get(js, tk, pl, "status"), res, sizeof(res));
+                if (res[0] == '\0') strcpy(res, "OK");
+                if (strcmp(s->pend[k].action, "SetChargingProfile") == 0 && strcmp(res, "Accepted") == 0) s->limit_a = s->pend[k].arg;
+            } else {
+                int c = oc_next(tk, i_id);
+                char code[20];
+                oc_str(js, tk, c, code, sizeof(code));
+                snprintf(res, sizeof(res), "Fehler %s", code);
+            }
+            snprintf(s->last_result, sizeof(s->last_result), "%s: %s", s->pend[k].action, res);
+            s->pend[k].id[0] = '\0';
+            break;
+        }
+    }
+    return 0;
+}
+// ===== Ende OCPP-Kern =====
+
+// =====================================================
+//   OCPP 1.6-J (Central System): Glue zu ESP-IDF
+//   Die Wallbox verbindet sich als Client per WebSocket auf ws://<ESP-IP>/ocpp
+//   Alle Zugriffe laufen im httpd-Task (WebSocket-Handler, API, Formulare) -> kein Mutex nötig.
+// =====================================================
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+#define OCPP_WS 1
+#endif
+#define OC_RXMAX 3072
+#define OC_TXMAX 1024
+
+static oc_state_t   g_oc;
+static httpd_handle_t s_httpd = NULL;
+static int          s_oc_fd = -1;
+
+static void oc_time_now(char *b, int n) {
+    time_t t = time(NULL);
+    if (t < 1700000000) { snprintf(b, n, "1970-01-01T00:00:00Z"); return; }   // Uhr noch nicht per SNTP gesetzt
+    struct tm tmv;
+    gmtime_r(&t, &tmv);
+    strftime(b, n, "%Y-%m-%dT%H:%M:%SZ", &tmv);
+}
+
+#ifdef OCPP_WS
+static void oc_close_fn(httpd_handle_t hd, int fd) {
+    (void)hd;
+    if (fd == s_oc_fd) {
+        s_oc_fd = -1;
+        oc_on_disconnect(&g_oc);
+        ESP_LOGW(TAG, "OCPP: Wallbox getrennt");
+    }
+    close(fd);
+}
+
+// Nur die konfigurierte Wallbox-IP darf sich verbinden (ist keine IP eingetragen, ist jede erlaubt)
+static bool oc_peer_ok(int fd) {
+    if (g_wb_ip[0] == '\0') return true;
+    struct sockaddr_storage ss;
+    socklen_t l = sizeof(ss);
+    if (getpeername(fd, (struct sockaddr *)&ss, &l) != 0 || ss.ss_family != AF_INET) return false;
+    return ((struct sockaddr_in *)&ss)->sin_addr.s_addr == inet_addr(g_wb_ip);
+}
+
+static bool oc_send_buf(const char *s, int n) {
+    if (s_oc_fd < 0 || !s_httpd || n <= 0) return false;
+    httpd_ws_frame_t f;
+    memset(&f, 0, sizeof(f));
+    f.type = HTTPD_WS_TYPE_TEXT;
+    f.final = true;
+    f.payload = (uint8_t *)s;
+    f.len = (size_t)n;
+    bool ok = httpd_ws_send_frame_async(s_httpd, s_oc_fd, &f) == ESP_OK;
+    if (ok && !strstr(s, "\"MeterValues\"")) ESP_LOGI(TAG, "OCPP >> %.160s", s);
+    return ok;
+}
+
+static esp_err_t ocpp_ws_handler(httpd_req_t *req) {
+    int fd = httpd_req_to_sockfd(req);
+    int64_t now = esp_timer_get_time() / 1000;
+
+    if (req->method == HTTP_GET) {                 // WebSocket-Handshake ist abgeschlossen
+        if (!g_ocpp_on || !oc_peer_ok(fd)) {
+            ESP_LOGW(TAG, "OCPP: Verbindung abgelehnt (aus oder fremde IP)");
+            return ESP_FAIL;
+        }
+        if (s_oc_fd >= 0 && s_oc_fd != fd && s_httpd) httpd_sess_trigger_close(s_httpd, s_oc_fd);
+        char cp[40];
+        const char *p = strrchr(req->uri, '/');
+        p = (p && p[1]) ? p + 1 : "";
+        size_t k = 0;
+        while (p[k] && p[k] != '?' && k < sizeof(cp) - 1) { cp[k] = p[k]; k++; }
+        cp[k] = '\0';
+        oc_clean_id(cp);
+        s_oc_fd = fd;
+        oc_on_connect(&g_oc, cp, now);
+        ESP_LOGI(TAG, "OCPP: Wallbox verbunden (ID '%s')", cp);
+        return ESP_OK;
+    }
+    if (fd != s_oc_fd) return ESP_FAIL;
+
+    httpd_ws_frame_t f;
+    memset(&f, 0, sizeof(f));
+    esp_err_t r = httpd_ws_recv_frame(req, &f, 0);
+    if (r != ESP_OK) return r;
+    if (f.type != HTTPD_WS_TYPE_TEXT) return ESP_OK;           // Ping/Close erledigt der Server selbst
+    if (!f.final || f.fragmented || f.len == 0 || f.len > OC_RXMAX) {
+        ESP_LOGW(TAG, "OCPP: Nachricht verworfen (Länge %u)", (unsigned)f.len);
+        return ESP_FAIL;
+    }
+    uint8_t *buf = malloc(f.len + 1);
+    char *out = malloc(OC_TXMAX);
+    if (!buf || !out) { free(buf); free(out); return ESP_ERR_NO_MEM; }
+    f.payload = buf;
+    r = httpd_ws_recv_frame(req, &f, f.len);
+    if (r != ESP_OK) { free(buf); free(out); return r; }
+    buf[f.len] = '\0';
+    if (!strstr((char *)buf, "\"MeterValues\"")) ESP_LOGI(TAG, "OCPP << %.160s", (char *)buf);
+
+    int n = oc_handle(&g_oc, (char *)buf, (int)f.len, out, OC_TXMAX, now);
+    if (n > 0) oc_send_buf(out, n);
+    n = oc_next_call(&g_oc, out, OC_TXMAX);          // z. B. Konfiguration nach dem Start
+    if (n > 0) oc_send_buf(out, n);
+    free(buf);
+    free(out);
+    return ESP_OK;
+}
+#endif  // OCPP_WS
+
+// Befehl an die Wallbox. Rückgabe: Meldung für den Benutzer
+static const char *oc_command(const char *cmd, int amps) {
+#ifndef OCPP_WS
+    (void)cmd; (void)amps;
+    return "OCPP ist in dieser Firmware nicht verf&uuml;gbar: WebSocket-Unterst&uuml;tzung fehlt (CONFIG_HTTPD_WS_SUPPORT).";
+#else
+    if (!g_ocpp_on) return "OCPP ist deaktiviert.";
+    if (!g_oc.connected || s_oc_fd < 0) return "Die Wallbox ist nicht per OCPP verbunden.";
+    char *out = malloc(OC_TXMAX);
+    if (!out) return "Kein Speicher.";
+    const char *res = "Unbekannter Befehl.";
+    int n = 0;
+    if (strcmp(cmd, "start") == 0) {
+        n = oc_build_remote_start(&g_oc, out, OC_TXMAX);
+        res = "Start der Ladung wurde angefordert. Das Ergebnis steht unter Info.";
+    } else if (strcmp(cmd, "stop") == 0) {
+        n = oc_build_remote_stop(&g_oc, out, OC_TXMAX);
+        res = n > 0 ? "Stopp der Ladung wurde angefordert. Das Ergebnis steht unter Info."
+                    : "Es ist keine laufende Ladung bekannt.";
+        if (n <= 0) { free(out); return res; }
+    } else if (strcmp(cmd, "limit") == 0) {
+        n = oc_build_set_limit(&g_oc, out, OC_TXMAX, amps, "TxDefaultProfile");
+        if (n > 0 && !oc_send_buf(out, n)) { free(out); return "Senden an die Wallbox ist fehlgeschlagen."; }
+        n = g_oc.in_tx ? oc_build_set_limit(&g_oc, out, OC_TXMAX, amps, "TxProfile") : 0;   // laufende Ladung zusätzlich direkt begrenzen
+        res = "Die Strombegrenzung wurde gesendet. Das Ergebnis steht unter Info.";
+    } else if (strcmp(cmd, "trigger") == 0) {
+        n = oc_build_trigger(&g_oc, out, OC_TXMAX, "MeterValues");
+        res = "Messwerte wurden angefordert.";
+    }
+    if (n > 0 && !oc_send_buf(out, n)) res = "Senden an die Wallbox ist fehlgeschlagen.";
+    free(out);
+    return res;
+#endif
+}
+
+// JSON-Hilfe: Text ohne Sonderzeichen ausgeben (kommt vom Fremdgerät!)
+static void jb_safe(jb_t *j, const char *key, const char *s) {
+    char t[72];
+    size_t n = 0;
+    for (; s && *s && n < sizeof(t) - 1; s++) {
+        unsigned char c = (unsigned char)*s;
+        t[n++] = (isalnum(c) || c == ' ' || c == '-' || c == '_' || c == '.' || c == ':' || c == '/' || c == '+') ? (char)c : '_';
+    }
+    t[n] = '\0';
+    jb_str(j, key, t);
+}
+
+static int oc_i64_to_int(int64_t v) { return (v < 0 || v > 2000000000LL) ? UNK : (int)v; }
+
+static void jb_oc(jb_t *j, bool detail) {
+    const oc_state_t *o = &g_oc;
+    int64_t now = esp_timer_get_time() / 1000;
+    int age = (o->connected && o->last_rx_ms > 0) ? (int)((now - o->last_rx_ms) / 1000) : UNK;
+    int ci[3] = { unk_if_neg(o->cur_da[0]), unk_if_neg(o->cur_da[1]), unk_if_neg(o->cur_da[2]) };
+    int cv[3] = { unk_if_neg(o->volt_dv[0]), unk_if_neg(o->volt_dv[1]), unk_if_neg(o->volt_dv[2]) };
+    jb_raw(j, "\"oc\":{");
+    jb_bool(j, "on", g_ocpp_on != 0);
+#ifdef OCPP_WS
+    jb_bool(j, "ws", true);
+#else
+    jb_bool(j, "ws", false);
+#endif
+    jb_bool(j, "conn", o->connected);
+    jb_bool(j, "boot", o->booted);
+    jb_num(j, "age", age, 1);
+    jb_safe(j, "st", o->status);
+    jb_safe(j, "err", o->error);
+    jb_num(j, "pw", unk_if_neg(o->power_w), 1);
+    jb_num3(j, "i", ci, 10);
+    jb_num3(j, "v", cv, 10);
+    jb_num(j, "off", unk_if_neg(o->offered_da), 10);
+    jb_num(j, "soc", unk_if_neg(o->soc), 1);
+    jb_num(j, "tot", oc_i64_to_int(o->energy_wh), 1);      // Wh
+    jb_num(j, "ses", oc_i64_to_int(o->ses_wh), 1);         // Wh
+    jb_bool(j, "tx", o->in_tx);
+    jb_num(j, "lim", unk_if_neg(o->limit_a), 1);
+    jb_safe(j, "res", o->last_result);
+    if (detail) {
+        jb_safe(j, "cp", o->cp_id);
+        jb_safe(j, "vendor", o->vendor);
+        jb_safe(j, "model", o->model);
+        jb_safe(j, "fw", o->fw);
+        jb_safe(j, "serial", o->serial);
+        jb_raw(j, "\"rx\":%lu,\"txm\":%lu,", (unsigned long)o->rx, (unsigned long)o->txm);
+    }
+    jb_close(j);
+    jb_raw(j, ",");
+}
+
+
 // ---- /api/status: alle Live-Werte der Hauptseite ----
 static esp_err_t api_status_handler(httpd_req_t *req) {
     // öffentlich (nur lesend): kein Login nötig
 
     soc_cache_t c = cache_get();
     const inv_ext_t *x = &c.ext;
-    const size_t cap = 3072;
+    const size_t cap = 4096;
     char *buf = malloc(cap);
     if (!buf) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Kein Speicher");
@@ -1247,6 +1950,7 @@ static esp_err_t api_status_handler(httpd_req_t *req) {
     jb_num(&j, "tot", unk_if_neg(w->total_wh), 1000);
     jb_close(&j);
     jb_raw(&j, ",");
+    jb_oc(&j, false);
 
     jb_close(&j);
     return json_send(req, &j);
@@ -1265,7 +1969,7 @@ static esp_err_t api_info_handler(httpd_req_t *req) {
 
     soc_cache_t c = cache_get();
     const inv_ext_t *x = &c.ext;
-    const size_t cap = 3072;
+    const size_t cap = 4096;
     char *buf = malloc(cap);
     if (!buf) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Kein Speicher");
@@ -1279,11 +1983,13 @@ static esp_err_t api_info_handler(httpd_req_t *req) {
     jb_raw(&j, "\"poll\":%u,", (unsigned)g_poll_interval_s);
     jb_str(&j, "inv_ip", g_mb_ip);
     jb_str(&j, "eth_ip", s_eth_ip);
+    jb_str(&j, "ssid", s_ap_ssid);
     jb_str(&j, "wb_ip", g_wb_ip);
 
     // Wechselrichter
     jb_num(&j, "dev_type", x->dev_type, 1);
     jb_str(&j, "dev_name", known(x->dev_type) ? dev_type_name(x->dev_type) : "");
+    jb_str(&j, "profile", g_prof->name);
     jb_str(&j, "serial", x->serial);
     jb_str(&j, "fw", x->fw);
     if (x->clock_valid) {
@@ -1341,6 +2047,7 @@ static esp_err_t api_info_handler(httpd_req_t *req) {
     // Modbus-Statistik
     jb_mb(&j, "mb_inv", &s_inv);
     jb_mb(&j, "mb_wb", &s_wb);
+    jb_oc(&j, true);
 
     jb_close(&j);
     return json_send(req, &j);
@@ -1428,6 +2135,7 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         ".oc .v{font-size:14px;font-weight:normal;color:#223;line-height:1.2;word-break:break-word;}"
         ".oc .v.s{font-size:12px;font-weight:bold;color:#445;}"
         ".oc.ph{opacity:.55;}"
+        ".bpulse{animation:bp 1s ease-in-out infinite;}@keyframes bp{50%{opacity:.35}}"
         ".o-sol{grid-area:1/3;--c:#f0a30a;}.o-bat{grid-area:3/1;--c:#2e9e4f;}.o-hou{grid-area:3/3;--c:#3f68a8;}"
         ".o-wb{grid-area:3/5;--c:#16958c;}.o-grd{grid-area:5/3;--c:#7b5ea7;}"
         ".fl{position:relative;justify-self:center;align-self:center;opacity:.25;}"
@@ -1450,9 +2158,11 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         "</div>"
         "<div class='fl v f-sol' id='f_sol'></div>"
         "<div class='oc o-bat'>"
-        "<svg viewBox='0 0 48 48'><rect x='6' y='14' width='30' height='22' rx='3'/><path d='M36 21h4v8h-4'/><rect id='o_fill' x='9' y='17' width='0' height='16' rx='1' style='fill:var(--c);stroke:none'/></svg>"
+        "<svg viewBox='0 0 48 48'><rect x='6' y='14' width='30' height='22' rx='3'/><path d='M36 21h4v8h-4'/><rect id='o_fill' x='9' y='17' width='0' height='16' rx='1' style='fill:var(--c);stroke:none'/><path id='o_bch' class='bpulse' d='M23 16L17 26H22L20 34L27 23H22Z' style='display:none;fill:#ffd54a;stroke:#7a5b00;stroke-width:1.2'/><path id='o_bdi' class='bpulse' d='M21 18V30M16 25.5L21 31L26 25.5' style='display:none;stroke:#c0392b;stroke-width:3.2'/></svg>"
         "<div class='t'>Batterie</div><div class='v s' id='o_batw'>&ndash;</div>"
         "<div class='l'>Akkustand</div><div class='v' id='o_soc'>&ndash;</div>"
+        "<div class='l'>Geladen</div><div class='v' id='o_chg'>&ndash;</div>"
+        "<div class='l'>Abgegeben (entladen)</div><div class='v' id='o_dis'>&ndash;</div>"
         "<div class='l'>Einspeise-Verdienst</div><div class='v' id='o_rev'>&ndash;</div>"
         "</div>"
         "<div class='fl h f-bat' id='f_bat'></div>"
@@ -1465,11 +2175,11 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         "<div class='l'>Ersparnis Eigenverbrauch</div><div class='v' id='o_save'>&ndash;</div>"
         "</div>"
         "<div class='fl h f-wb' id='f_wb'></div>"
-        "<div class='oc o-wb ph'>"
+        "<div class='oc o-wb ph' id='o_wbc'>"
         "<svg viewBox='0 0 48 48'><rect x='10' y='5' width='20' height='35' rx='4'/><circle cx='20' cy='13' r='2.5'/><path d='M22 20L16 29H21L18 36'/><path d='M30 28H35Q40 28 40 33V38'/><rect x='37' y='38' width='6' height='6' rx='1'/></svg>"
-        "<div class='t'>Wallbox</div><div class='v s'>folgt</div>"
-        "<div class='l'>Geladen heute</div><div class='v'>&ndash;</div>"
-        "<div class='l'>Ladekosten</div><div class='v'>&ndash;</div>"
+        "<div class='t'>Wallbox</div><div class='v s' id='o_wbw'>&ndash;</div>"
+        "<div class='l'>Status</div><div class='v' id='o_wbst'>&ndash;</div>"
+        "<div class='l'>Letzte Ladung</div><div class='v' id='o_wbses'>&ndash;</div>"
         "</div>"
         "<div class='fl v f-grd' id='f_grd'></div>"
         "<div class='oc o-grd'>"
@@ -1481,24 +2191,6 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         "</div></div>", HTTPD_RESP_USE_STRLEN);
 
     httpd_resp_send_chunk(req,
-        "<div class='box'><h3>Heute</h3>"
-        "<p>PV-Erzeugung: <b id='pvday'>&ndash;</b></p>"
-        "<p>Netzbezug: <b id='impday'>&ndash;</b></p>"
-        "<p>Einspeisung: <b id='expday'>&ndash;</b></p>"
-        "<p>Batterie geladen: <b id='chgday'>&ndash;</b></p>"
-        "<p>Batterie entladen: <b id='disday'>&ndash;</b></p>"
-        "<p>Eigenverbrauchsquote PV: <b id='selfuse'>&ndash;</b></p>"
-        "<p id='cost_buy_row' style='display:none'>Netzbezug-Kosten: <b id='cost_buy'></b></p>"
-        "<p id='rev_row' style='display:none'>Einspeise-Erl&ouml;s: <b id='rev'></b></p>"
-        "<p id='save_row' style='display:none'>Ersparnis durch Eigenverbrauch: <b id='save'></b></p>"
-        "</div>"
-
-        "<div class='box'><h3>Gesamt</h3>"
-        "<p>PV-Erzeugung: <b id='pvtot'>&ndash;</b></p>"
-        "<p>Netzbezug: <b id='imptot'>&ndash;</b></p>"
-        "<p>Einspeisung: <b id='exptot'>&ndash;</b></p>"
-        "</div>"
-
         "<div class='box' id='wbbox' style='display:none'><h3>Wallbox</h3>"
         "<p id='wbnoconn' style='display:none'>Keine Verbindung zur Wallbox</p>"
         "<div id='wbdetail'>"
@@ -1509,6 +2201,16 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         "<p>Spannung L1/L2/L3: <b id='wbv'>&ndash;</b></p>"
         "<p>Z&auml;hlerstand gesamt: <b id='wbtot'>&ndash;</b></p>"
         "<p id='wbmisc' style='font-size:13px;color:#666;'></p>"
+        "</div>"
+        "<div id='ocdetail' style='display:none'>"
+        "<p id='ochead' style='font-size:13px;color:#666;margin-top:14px;'>Per OCPP</p>"
+        "<p>Status: <b id='ocst'>&ndash;</b></p>"
+        "<p>Ladeleistung: <b id='ocpw'>&ndash;</b></p>"
+        "<p>Strom L1/L2/L3: <b id='oci'>&ndash;</b></p>"
+        "<p>Spannung L1/L2/L3: <b id='ocv'>&ndash;</b></p>"
+        "<p>Energie dieser Ladung: <b id='ocses'>&ndash;</b></p>"
+        "<p>Z&auml;hlerstand gesamt: <b id='octot'>&ndash;</b></p>"
+        "<p id='ocmisc' style='font-size:13px;color:#666;'></p>"
         "</div></div>", HTTPD_RESP_USE_STRLEN);
 
     httpd_resp_send_chunk(req,
@@ -1527,14 +2229,19 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         "function P(v){return v.toFixed(1)+' %';}"
         "function E(v){return v.toFixed(2)+' &euro;';}"
         "function show(i,on){var e=$(i);if(e)e.style.display=on?'':'none';}"
+        "function J3(a,u,n){return(a[0]===null||a[1]===null||a[2]===null)?'&ndash;':a[0].toFixed(n)+' / '+a[1].toFixed(n)+' / '+a[2].toFixed(n)+' '+u;}"
         "var SYS={2:'Stopp',8:'Standby',16:'Initialisierung',32:'Start',64:'L&auml;uft',256:'ST&Ouml;RUNG',"
         "1024:'Wartungsmodus',2048:'Zwangsbetrieb',4096:'L&auml;uft im Notbetrieb',9473:'Neustart',16384:'Externer EMS-Modus'};"
         "var WBS={1:'Frei (kein Fahrzeug)',2:'Fahrzeug verbunden (Standby)',3:'L&auml;dt',4:'Pausiert (Wallbox)',"
         "5:'Pausiert (Fahrzeug)',6:'Laden beendet',8:'Nicht verf&uuml;gbar',9:'Fehler'};"
         "var WBM={0:'Netzwerk',2:'Plug&amp;Play',6:'EMS'};"
+        "var OCS={Available:'Frei (kein Fahrzeug)',Preparing:'Fahrzeug verbunden',Charging:'L&auml;dt',SuspendedEVSE:'Pausiert (Wallbox)',"
+        "SuspendedEV:'Pausiert (Fahrzeug)',Finishing:'Laden beendet',Reserved:'Reserviert',Unavailable:'Nicht verf&uuml;gbar',Faulted:'Fehler'};"
+        "function wbp(d){var w=d.wb||{},o=d.oc||{};"
+        "if(w.on&&w.ok&&w.pw!==null)return w.pw;if(o.on&&o.conn&&o.pw!==null)return o.pw;return null;}"
         "function flow(i,on,rev){var e=$(i);if(!e)return;e.className=e.className.replace(/ on| rev/g,'')+(on?' on':'')+(on&&rev?' rev':'');}"
         "function ovflow(d){"
-        "var pv=Number(d.pv_w)||0,gr=Number(d.grid_w)||0,bt=Number(d.bat_w)||0,wp=(d.wb&&d.wb.on)?(Number(d.wb.pw)||0):0;"
+        "var pv=Number(d.pv_w)||0,gr=Number(d.grid_w)||0,bt=Number(d.bat_w)||0,wp=Number(wbp(d))||0;"
         "flow('f_sol',pv>20,false);"
         "flow('f_grd',Math.abs(gr)>20,gr>0);"
         "flow('f_bat',Math.abs(bt)>20,bt>0);"
@@ -1551,9 +2258,15 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         "T('o_save',(d.pbuy>0&&d.direct_day!==null&&d.dis_day!==null)?E((d.direct_day+d.dis_day)*d.pbuy/100):'&ndash;');"
         "T('o_imp',V(d.imp_day,K));T('o_exp',V(d.exp_day,K));"
         "T('o_gw',d.grid_w===null?'&ndash;':(d.grid_w>0?'Bezug '+d.grid_w+' W':(d.grid_w<0?'Einsp. '+(-d.grid_w)+' W':'0 W')));"
-        "T('o_soc',V(d.soc,P));"
+        "T('o_soc',V(d.soc,P));T('o_chg',V(d.chg_day,K));T('o_dis',V(d.dis_day,K));"
         "T('o_batw',d.bat_w===null?'&ndash;':(d.bat_w>0?'l&auml;dt '+d.bat_w+' W':(d.bat_w<0?'entl&auml;dt '+(-d.bat_w)+' W':'Ruhe')));"
+        "var wx=d.wb||{},ox=d.oc||{},wm=!!(wx.on&&wx.ok),om=!!(ox.on&&ox.conn),wq=wbp(d);"
+        "T('o_wbw',(wm||om)&&wq!==null?'aktuell '+Math.round(wq)+' W':'&ndash;');"
+        "T('o_wbst',wm?(WBS[wx.state]||'&ndash;'):(om?(OCS[ox.st]||ox.st||'&ndash;'):'&ndash;'));"
+        "T('o_wbses',(om&&ox.ses!==null)?(ox.ses/1000).toFixed(2)+' kWh':'&ndash;');"
+        "var wc=$('o_wbc');if(wc)wc.className='oc o-wb'+((wm||om)?'':' ph');"
         "T('o_rev',(d.pfeed>0&&d.exp_day!==null)?E(d.exp_day*d.pfeed/100):'&ndash;');"
+        "var bc=$('o_bch'),bd=$('o_bdi');if(bc)bc.style.display=(d.bat_w>20)?'':'none';if(bd)bd.style.display=(d.bat_w<-20)?'':'none';"
         "var f=$('o_fill');if(f&&d.soc!==null){var s=Math.max(0,Math.min(100,d.soc));f.setAttribute('width',(24*s/100).toFixed(1));f.style.fill=s<15?'#d9534f':(s<30?'#f0a30a':'#2e9e4f');}"
         "}", HTTPD_RESP_USE_STRLEN);
 
@@ -1561,21 +2274,13 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         "function fill(d){"
         "show('a_pw',d.defpw);show('a_grid',d.grid_state===170);show('a_fault',d.fault===true);"
         "var dc=(d.direct_day!==null&&d.dis_day!==null&&d.imp_day!==null)?d.direct_day+d.dis_day+d.imp_day:null;"
-        "T('pvday',V(d.pv_day,K));T('impday',V(d.imp_day,K));T('expday',V(d.exp_day,K));"
-        "T('chgday',V(d.chg_day,K));T('disday',V(d.dis_day,K));T('selfuse',V(d.self_use,P));"
-        "show('cost_buy_row',d.pbuy>0&&d.imp_day!==null);if(d.imp_day!==null)T('cost_buy',E(d.imp_day*d.pbuy/100));"
-        "show('rev_row',d.pfeed>0&&d.exp_day!==null);if(d.exp_day!==null)T('rev',E(d.exp_day*d.pfeed/100));"
-        "var sv=d.pbuy>0&&d.direct_day!==null&&d.dis_day!==null;show('save_row',sv);"
-        "if(sv)T('save',E((d.direct_day+d.dis_day)*d.pbuy/100));"
-        "T('pvtot',V(d.pv_total,K));T('imptot',V(d.imp_total,K));T('exptot',V(d.exp_total,K));"
         "ovfill(d,dc);", HTTPD_RESP_USE_STRLEN);
 
     httpd_resp_send_chunk(req,
-        "var w=d.wb;show('wbbox',w.on);"
-        "if(w.on){"
-        "show('wbnoconn',!w.ok);show('wbdetail',w.ok);"
-        "if(!w.ok)T('wbnoconn','Keine Verbindung zu '+w.ip);"
-        "if(w.ok){"
+        "var w=d.wb,o=d.oc||{};var om=!!(o.on&&o.conn);show('wbbox',w.on||om);"
+        "show('wbnoconn',w.on&&!w.ok);show('wbdetail',w.on&&w.ok);"
+        "if(w.on&&!w.ok)T('wbnoconn','Keine Modbus-Verbindung zu '+w.ip);"
+        "if(w.on&&w.ok){"
         "T('wbstate',WBS[w.state]||'Unbekannt');T('wbpw',V(w.pw,W));"
         "if(w.pw>50&&d.grid_w!==null){var fg=Math.min(Math.max(d.grid_w,0),w.pw);"
         "T('wbshare','ca. '+fg+' W aus dem Netz, ca. '+(w.pw-fg)+' W aus PV/Akku');show('wbshare',true);}"
@@ -1585,7 +2290,16 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         "T('wbtot',V(w.tot,K));"
         "T('wbmisc','Phasen: '+(w.ph===null?'&ndash;':w.ph)+' &middot; Betriebsart: '+(w.mode===null?'&ndash;':(WBM[w.mode]||'unbekannt'))"
         "+' &middot; Sollwert (roh): '+(w.set===null?'&ndash;':w.set)+' &middot; '+w.ip);"
-        "}}"
+        "}"
+        "show('ocdetail',om);show('ochead',om&&w.on&&w.ok);"
+        "if(om){"
+        "T('ocst',(OCS[o.st]||o.st||'&ndash;')+(o.err&&o.err!=='NoError'?' ('+o.err+')':''));T('ocpw',V(o.pw,W));"
+        "T('oci',J3(o.i,'A',1));T('ocv',J3(o.v,'V',0));"
+        "T('ocses',V(o.ses,function(v){return (v/1000).toFixed(2)+' kWh';}));"
+        "T('octot',V(o.tot,function(v){return (v/1000).toFixed(1)+' kWh';}));"
+        "T('ocmisc','Strombegrenzung: '+(o.lim===null?'&ndash;':o.lim+' A')+' &middot; angeboten: '+(o.off===null?'&ndash;':o.off.toFixed(1)+' A')"
+        "+(o.soc!==null?' &middot; Fahrzeug-SOC '+o.soc+' %':''));"
+        "}"
         "}"
         "function upd(){fetch('/api/status',{cache:'no-store'}).then(function(r){return r.json();}).then(fill).catch(function(){});}"
         "upd();setInterval(upd,3000);"
@@ -1629,6 +2343,24 @@ static esp_err_t info_get_handler(httpd_req_t *req) {
         "<p>Verbrauch heute: <b id='daycons'>&ndash;</b></p>"
         "<p>Verbrauch im Jahr: <b id='yearcons'>&ndash;</b></p>"
         "<p>Autarkie heute: <b id='autarky'>&ndash;</b></p>"
+        "</div>"
+
+        "<div class='box'><h3>Heute</h3>"
+        "<p>PV-Erzeugung: <b id='pvday'>&ndash;</b></p>"
+        "<p>Netzbezug: <b id='impday'>&ndash;</b></p>"
+        "<p>Einspeisung: <b id='expday'>&ndash;</b></p>"
+        "<p>Batterie geladen: <b id='chgday'>&ndash;</b></p>"
+        "<p>Batterie entladen: <b id='disday'>&ndash;</b></p>"
+        "<p>Eigenverbrauchsquote PV: <b id='selfuse'>&ndash;</b></p>"
+        "<p id='cost_buy_row' style='display:none'>Netzbezug-Kosten: <b id='cost_buy'></b></p>"
+        "<p id='rev_row' style='display:none'>Einspeise-Erl&ouml;s: <b id='rev'></b></p>"
+        "<p id='save_row' style='display:none'>Ersparnis durch Eigenverbrauch: <b id='save'></b></p>"
+        "</div>"
+
+        "<div class='box'><h3>Gesamt</h3>"
+        "<p>PV-Erzeugung: <b id='pvtot'>&ndash;</b></p>"
+        "<p>Netzbezug: <b id='imptot'>&ndash;</b></p>"
+        "<p>Einspeisung: <b id='exptot'>&ndash;</b></p>"
         "</div>",
         HTTPD_RESP_USE_STRLEN);
     httpd_resp_send_chunk(req,
@@ -1656,10 +2388,10 @@ static esp_err_t info_get_handler(httpd_req_t *req) {
         "var h='';"
         "h+=S('Verbindung',R('Stand der Werte',d.age===null?(d.ready?'Warte auf erste Abfrage...':'Modbus nicht verbunden'):('vor '+d.age+' s'))"
         "+R('Abfrage alle',d.poll+' s')+R('Sungrow-IP',d.inv_ip)+R('Ethernet-IP',d.eth_ip||'nicht verbunden')"
-        "+R('WLAN-IP','192.168.4.1')+(d.wb_ip?R('Wallbox-IP',d.wb_ip):''));"
+        "+R('WLAN (Hotspot)',(d.ssid||'')+' / 192.168.4.1')+(d.wb_ip?R('Wallbox-IP',d.wb_ip):''));"
         "var tp=d.dev_type===null?'&ndash;':((d.dev_name?d.dev_name+' ':'')+'(0x'+d.dev_type.toString(16).toUpperCase()+')');"
         "var ck=d.clock?(Z(d.clock[2])+'.'+Z(d.clock[1])+'.'+d.clock[0]+' '+Z(d.clock[3])+':'+Z(d.clock[4])+':'+Z(d.clock[5])):'&ndash;';"
-        "h+=S('Wechselrichter',R('Typ',tp)+R('Seriennummer',d.serial||'&ndash;')+R('Firmware',d.fw||'&ndash;')"
+        "h+=S('Wechselrichter',R('Profil',d.profile||'&ndash;')+R('Typ',tp)+R('Seriennummer',d.serial||'&ndash;')+R('Firmware',d.fw||'&ndash;')"
         "+R('Uhr',ck)+R('Systemzustand',d.sys_state===null?'&ndash;':(SYS[d.sys_state]||'unbekannt'))"
         "+R('Netzstatus',d.grid_state===85?'am Netz':(d.grid_state===170?'NOTBETRIEB':'&ndash;'))"
         "+R('Innentemperatur',U(d.inv_temp,F1('&deg;C')))+R('CO&#8322;-Einsparung gesamt',U(d.co2,F1('kg'))));"
@@ -1683,6 +2415,13 @@ static esp_err_t info_get_handler(httpd_req_t *req) {
         "+R('Build',d.build)+R('ESP-IDF',d.idf)+R('Aktive Partition',d.part)"
         "+R('Ethernet-Link',d.eth_link?'verbunden':'getrennt')+R('WLAN-Clients',d.clients<0?'&ndash;':d.clients));"
         "h+=S('Modbus-Statistik',MB('Wechselrichter',d.mb_inv)+(d.wb_ip?MB('Wallbox',d.mb_wb):''));"
+        "var o=d.oc;if(o&&o.on){h+=S('Wallbox (OCPP)',R('OCPP-Server',o.ws?'aktiv':'nicht verf&uuml;gbar (WebSocket fehlt im Build)')"
+        "+R('Verbindung',o.conn?('verbunden, letzte Nachricht vor '+o.age+' s'):'nicht verbunden')"
+        "+(o.conn?R('Wallbox-ID',o.cp||'&ndash;')+R('Hersteller / Modell',(o.vendor||'&ndash;')+' / '+(o.model||'&ndash;'))"
+        "+R('Firmware',o.fw||'&ndash;')+R('Seriennummer',o.serial||'&ndash;')"
+        "+R('Nachrichten empfangen / gesendet',o.rx+' / '+o.txm)+R('Strombegrenzung (best&auml;tigt)',o.lim===null?'&ndash;':o.lim+' A')"
+        "+R('Laufende Transaktion',o.tx?'ja':'nein'):'')"
+        "+R('Letzter Befehl',o.res||'&ndash;'));}"
         "document.getElementById('c').innerHTML=h;}"
         "function upd(){fetch('/api/info',{cache:'no-store'}).then(function(r){return r.json();}).then(build).catch(function(){});}"
         "upd();setInterval(upd,5000);"
@@ -1692,6 +2431,7 @@ static esp_err_t info_get_handler(httpd_req_t *req) {
         "function W(v){return Math.round(v)+' W';}"
         "function K(v){return v.toFixed(1)+' kWh';}"
         "function P(v){return v.toFixed(1)+' %';}"
+        "function E(v){return v.toFixed(2)+' &euro;';}"
         "function show(i,on){var e=$(i);if(e)e.style.display=on?'':'none';}"
         "function live(d){"
         "T('soc',V(d.soc,P));"
@@ -1719,6 +2459,13 @@ static esp_err_t info_get_handler(httpd_req_t *req) {
         "ys+=' <span style=font-size:12px;color:#666>(seit '+s.substr(6,2)+'.'+s.substr(4,2)+'.'+s.substr(0,4)+')</span>';}}"
         "T('yearcons',ys);"
         "T('autarky',(dc!==null&&dc>0)?Math.round(100*(d.direct_day+d.dis_day)/dc)+' %':'&ndash;');"
+        "T('pvday',V(d.pv_day,K));T('impday',V(d.imp_day,K));T('expday',V(d.exp_day,K));"
+        "T('chgday',V(d.chg_day,K));T('disday',V(d.dis_day,K));T('selfuse',V(d.self_use,P));"
+        "show('cost_buy_row',d.pbuy>0&&d.imp_day!==null);if(d.imp_day!==null)T('cost_buy',E(d.imp_day*d.pbuy/100));"
+        "show('rev_row',d.pfeed>0&&d.exp_day!==null);if(d.exp_day!==null)T('rev',E(d.exp_day*d.pfeed/100));"
+        "var sv=d.pbuy>0&&d.direct_day!==null&&d.dis_day!==null;show('save_row',sv);"
+        "if(sv)T('save',E((d.direct_day+d.dis_day)*d.pbuy/100));"
+        "T('pvtot',V(d.pv_total,K));T('imptot',V(d.imp_total,K));T('exptot',V(d.exp_total,K));"
         "}"
         "function updl(){fetch('/api/status',{cache:'no-store'}).then(function(r){return r.json();}).then(live).catch(function(){});}"
         "updl();setInterval(updl,3000);"
@@ -1741,11 +2488,9 @@ static esp_err_t chart_get_handler(httpd_req_t *req) {
         "<h2>Verlauf</h2>"
         "<div class='box' style='max-width:900px;'><h3>Leistung</h3>"
         "<canvas id='c1' width='860' height='260' style='max-width:100%;height:auto;'></canvas>"
-        "<p style='font-size:13px;color:#666;'>"
-        "<b style='color:#e6a700'>&#9644; PV</b> &middot; "
-        "<b style='color:#d9534f'>&#9644; Haus</b> &middot; "
-        "<b style='color:#555'>&#9644; Netz</b> (+ Bezug / &ndash; Einspeisung) &middot; "
-        "<b style='color:#28a745'>&#9644; Akku</b> (+ Laden / &ndash; Entladen)</p></div>"
+        "<div id='lg' style='font-size:14px;margin-top:8px;'></div>"
+        "<p style='font-size:12px;color:#666;margin:6px 0 0 0;'>Haken setzen oder entfernen, um Kurven ein- oder auszublenden. "
+        "Netz: + Bezug / &ndash; Einspeisung &middot; Akku: + Laden / &ndash; Entladen</p></div>"
         "<div class='box' style='max-width:900px;'><h3>Akkustand</h3>"
         "<canvas id='c2' width='860' height='200' style='max-width:100%;height:auto;'></canvas></div>"
         "<p style='font-size:13px;color:#666;'>Ein Punkt alle 5 Minuten, bis zu 24 Stunden. "
@@ -1756,6 +2501,7 @@ static esp_err_t chart_get_handler(httpd_req_t *req) {
         "function draw(id,keys,d,unit,zero){"
         "var cv=document.getElementById(id),x=cv.getContext('2d'),W=cv.width,H=cv.height,L=52,B=22,T=8,n=d.n;"
         "x.clearRect(0,0,W,H);x.font='12px sans-serif';"
+        "if(!keys.length){x.fillStyle='#555';x.fillText('Keine Kurve ausgew\u00e4hlt',L,H/2);return;}"
         "var lo=1e9,hi=-1e9;"
         "keys.forEach(function(k){d[k[0]].forEach(function(v){if(v!==null){if(v<lo)lo=v;if(v>hi)hi=v;}});});"
         "x.fillStyle='#555';"
@@ -1766,6 +2512,15 @@ static esp_err_t chart_get_handler(httpd_req_t *req) {
         "x.strokeStyle='#ddd';"
         "for(var i=0;i<=4;i++){var y=T+ph-ph*i/4;x.beginPath();x.moveTo(L,y);x.lineTo(W-6,y);x.stroke();"
         "x.fillText(Math.round(lo+(hi-lo)*i/4)+unit,2,y+4);}"
+        "var span=Math.max(1,(n-1)*d.step),t1=Date.now()/1000,t0=t1-span;"
+        "var iv=span>43200?14400:(span>21600?7200:(span>10800?3600:1800));"
+        "function Z2(v){return v<10?'0'+v:''+v;}"
+        "x.textAlign='center';"
+        "for(var t=Math.ceil(t0/1800)*1800;t<=t1;t+=1800){var dt=new Date(t*1000),mn=dt.getHours()*60+dt.getMinutes(),px=L+pw*(t-t0)/span;"
+        "var big=((mn*60)%iv===0);"
+        "x.strokeStyle=big?'#e4e4e4':'#f0f0f0';x.beginPath();x.moveTo(px,T);x.lineTo(px,T+ph+(big?5:3));x.stroke();"
+        "if(big&&px>=L+14&&px<=W-18){x.fillStyle='#555';x.fillText(Z2(dt.getHours())+':'+Z2(dt.getMinutes()),px,H-6);}}"
+        "x.textAlign='left';x.strokeStyle='#ddd';"
         "if(zero&&lo<=0&&hi>=0){var z=T+ph-ph*(0-lo)/(hi-lo);x.strokeStyle='#222';x.lineWidth=1.5;x.beginPath();x.moveTo(L,z);x.lineTo(W-6,z);x.stroke();"
         "x.lineWidth=1;x.fillStyle='#222';x.font='bold 12px sans-serif';x.fillText('0',L-14,z+4);x.font='12px sans-serif';x.fillStyle='#555';}"
         "keys.forEach(function(k){x.strokeStyle=k[1];x.lineWidth=2;x.beginPath();var pen=false;"
@@ -1773,10 +2528,18 @@ static esp_err_t chart_get_handler(httpd_req_t *req) {
         "var px=L+pw*i/Math.max(1,n-1),py=T+ph-ph*(v-lo)/(hi-lo);"
         "if(pen)x.lineTo(px,py);else{x.moveTo(px,py);pen=true;}});x.stroke();});"
         "x.lineWidth=1;x.fillStyle='#555';"
-        "x.fillText('vor '+(n*d.step/3600).toFixed(1)+' h',L,H-6);x.fillText('jetzt',W-36,H-6);}"
-        "function load(){fetch('/api/history',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){"
-        "draw('c1',[['pv','#e6a700'],['load','#d9534f'],['grid','#555'],['bat','#28a745']],d,' W',true);"
-        "draw('c2',[['soc','#0066cc']],d,' %');}).catch(function(){});}"
+        "}"
+        "var SER=[['pv','#e6a700','PV'],['load','#d9534f','Haus'],['grid','#555','Netz'],['bat','#28a745','Akku']];"
+        "var HD=null,ON={pv:1,load:1,grid:1,bat:1};"
+        "try{var sv=JSON.parse(localStorage.getItem('chart_on')||'null');if(sv)for(var k in ON)if(k in sv)ON[k]=sv[k]?1:0;}catch(e){}"
+        "function paint(){if(!HD)return;"
+        "draw('c1',SER.filter(function(q){return ON[q[0]];}).map(function(q){return[q[0],q[1]];}),HD,' W',true);"
+        "draw('c2',[['soc','#0066cc']],HD,' %');}"
+        "function tog(k,v){ON[k]=v?1:0;try{localStorage.setItem('chart_on',JSON.stringify(ON));}catch(e){}paint();}"
+        "var lg='';SER.forEach(function(q){lg+='<label style=\\'margin:0 8px;white-space:nowrap;color:'+q[1]+';font-weight:bold;cursor:pointer\\'>"
+        "<input type=checkbox '+(ON[q[0]]?'checked ':'')+'onchange=\\'tog(&quot;'+q[0]+'&quot;,this.checked)\\' style=\\'accent-color:'+q[1]+'\\'> '+q[2]+'</label>';});"
+        "document.getElementById('lg').innerHTML=lg;"
+        "function load(){fetch('/api/history',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){HD=d;paint();}).catch(function(){});}"
         "load();setInterval(load,60000);"
         "</script>", HTTPD_RESP_USE_STRLEN);
     httpd_resp_send_chunk(req, HTML_FOOT, HTTPD_RESP_USE_STRLEN);
@@ -1802,6 +2565,11 @@ static esp_err_t set_post_handler(httpd_req_t *req) {
     }
 
     esp_err_t err = set_sungrow_backup_soc((uint16_t)val);
+    if (err == ESP_ERR_NOT_SUPPORTED) {
+        return send_message_page(req, "Nicht möglich",
+            "Dieser Wechselrichter-Typ unterstützt das Setzen der Notreserve nicht.",
+            "/options", "Zurück");
+    }
     if (err != ESP_OK) {
         return send_message_page(req, "Fehler",
             "Der Wert konnte nicht an den Wechselrichter geschrieben werden. Verbindung und IP prüfen.",
@@ -1844,9 +2612,24 @@ static esp_err_t options_get_handler(httpd_req_t *req) {
     }
     httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN);
 
+    // --- Wechselrichter-Typ (Profil) ---
+    httpd_resp_send_chunk(req,
+        "<div class='box'><h3>Wechselrichter-Typ</h3>"
+        "<p style='font-size:14px;'>Bestimmt die Modbus-Register. Nach dem Speichern startet das Ger&auml;t neu.</p>"
+        "<form method='post' action='/config/inverter'>"
+        "<select name='type' style='padding:10px;font-size:16px;max-width:90%;'>", HTTPD_RESP_USE_STRLEN);
+    for (int i = 0; i < s_nprof; i++) {
+        snprintf(line, sizeof(line), "<option value='%s'%s>%s</option>",
+                 s_profiles[i].id, (&s_profiles[i] == g_prof) ? " selected" : "", s_profiles[i].name);
+        httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN);
+    }
+    httpd_resp_send_chunk(req,
+        "</select><br><button class='grn' type='submit'>Speichern &amp; Neustart</button>"
+        "</form></div><br>", HTTPD_RESP_USE_STRLEN);
+
     // --- Modbus-IP ---
     snprintf(line, sizeof(line),
-        "<div class='box'><h3>Sungrow IP-Adresse</h3>"
+        "<div class='box'><h3>Wechselrichter IP-Adresse</h3>"
         "<form method='post' action='/config/ip'>"
         "<input type='text' name='ip' value='%s' maxlength='15' pattern='[0-9.]+' inputmode='decimal'><br>"
         "<button class='grn' type='submit'>Speichern &amp; Neustart</button>"
@@ -1864,6 +2647,39 @@ static esp_err_t options_get_handler(httpd_req_t *req) {
         "</form></div><br>", WALLBOX_UNIT_ID, WALLBOX_PORT, g_wb_ip);
     httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN);
 
+    // --- Wallbox OCPP ---
+    send_fmt(req,
+        "<div class='box'><h3>Wallbox OCPP</h3>"
+        "<p style='font-size:14px;'>In der Wallbox (iEnergyCharge / Web-Oberfl&auml;che) als OCPP-Server eintragen:<br>"
+        "<b>ws://%s/ocpp</b><br>Protokoll OCPP 1.6-J, keine Zugangsdaten. "
+        "Es kann nur ein OCPP-Server eingetragen sein; die Cloud-Anbindung der Wallbox entf&auml;llt dann.</p>"
+        "<p style='font-size:14px;'>Status: <b>%s</b></p>",
+        s_eth_ip[0] ? s_eth_ip : "&lt;ESP-IP&gt;",
+#ifdef OCPP_WS
+        !g_ocpp_on ? "aus" : (g_oc.connected ? "Wallbox verbunden" : "wartet auf Wallbox"));
+#else
+        "nicht verf&uuml;gbar (WebSocket-Unterst&uuml;tzung fehlt im Build)");
+#endif
+    send_fmt(req,
+        "<form method='post' action='/config/ocpp'>"
+        "<select name='on' style='padding:10px;font-size:16px;'>"
+        "<option value='1'%s>aktiv</option><option value='0'%s>aus</option></select><br>"
+        "<button class='grn' type='submit'>Speichern</button></form>",
+        g_ocpp_on ? " selected" : "", g_ocpp_on ? "" : " selected");
+    send_fmt(req,
+        "<hr><p style='font-size:14px;'>Ladestrom begrenzen (0 = pausieren):</p>"
+        "<form method='post' action='/wb/ocpp'><input type='hidden' name='cmd' value='limit'>"
+        "<input type='number' name='a' min='0' max='32' step='1' value='%d' required "
+        "style='padding:10px;font-size:18px;width:90px;text-align:center;'> A<br>"
+        "<button class='grn' type='submit'>Strom setzen</button></form>",
+        g_oc.limit_a >= 0 ? g_oc.limit_a : 16);
+    httpd_resp_send_chunk(req,
+        "<form method='post' action='/wb/ocpp' style='margin-top:10px;'><input type='hidden' name='cmd' value='start'>"
+        "<button class='grn' type='submit'>Ladung starten</button></form>"
+        "<form method='post' action='/wb/ocpp' style='margin-top:6px;'><input type='hidden' name='cmd' value='stop'>"
+        "<button class='red' type='submit'>Ladung stoppen</button></form>"
+        "</div><br>", HTTPD_RESP_USE_STRLEN);
+
     // --- Abfrage-Intervall ---
     snprintf(line, sizeof(line),
         "<div class='box'><h3>Abfrage-Intervall</h3>"
@@ -1876,7 +2692,7 @@ static esp_err_t options_get_handler(httpd_req_t *req) {
     httpd_resp_send_chunk(req, line, HTTPD_RESP_USE_STRLEN);
 
     // --- Notreserve (Backup-SOC) ---
-    {
+    if (RG.backup_soc != NOREG) {
         soc_cache_t nc = cache_get();
         int cur = (nc.backup_soc >= 0 && nc.backup_soc <= 100) ? nc.backup_soc : SOC_NORMAL;
         send_fmt(req,
@@ -1894,7 +2710,7 @@ static esp_err_t options_get_handler(httpd_req_t *req) {
     }
 
     // --- Batterie-Grenzen (Min-/Max-SOC) ---
-    {
+    if (RG.max_soc != NOREG && RG.min_soc != NOREG) {
         soc_cache_t oc = cache_get();
         char lim[400];
         int cur_min = 10, cur_max = 100;
@@ -1985,6 +2801,34 @@ static void schedule_restart(void) {
     }
 }
 
+// Wechselrichter-Typ ändern (POST /config/inverter)
+static esp_err_t config_inverter_post_handler(httpd_req_t *req) {
+    if (!guard(req, true)) return ESP_OK;
+
+    char body[64], type[32];
+    if (!read_body(req, body, sizeof(body)) || !form_value(body, "type", type, sizeof(type))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Ungültige Anfrage");
+        return ESP_FAIL;
+    }
+    const inv_profile_t *found = NULL;
+    for (int i = 0; i < s_nprof; i++) {
+        if (strcmp(s_profiles[i].id, type) == 0) { found = &s_profiles[i]; break; }
+    }
+    if (!found) {
+        return send_message_page(req, "Fehler", "Unbekannter Wechselrichter-Typ.", "/options", "Zurück zu den Optionen");
+    }
+    if (config_save_str("inv_type", found->id) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Speichern fehlgeschlagen");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "Neuer Wechselrichter-Typ gespeichert: %s", found->id);
+    esp_err_t r = send_message_page(req, "Gespeichert",
+        "Der Typ wurde gespeichert. Das Gerät startet neu und ist in ca. 10 Sekunden wieder erreichbar.",
+        "/", "Zur Startseite");
+    schedule_restart();
+    return r;
+}
+
 static esp_err_t config_ip_post_handler(httpd_req_t *req) {
     if (!guard(req, true)) return ESP_OK;
 
@@ -2030,6 +2874,10 @@ static esp_err_t config_soclimits_post_handler(httpd_req_t *req) {
             "Ungültige Werte. Min-SOC: 0 bis 50 %, Max-SOC: 70 bis 100 %.",
             "/options", "Zurück zu den Optionen");
     }
+    if (RG.max_soc == NOREG || RG.min_soc == NOREG) {
+        return send_message_page(req, "Nicht möglich", "Dieser Wechselrichter-Typ unterstützt keine einstellbaren Batterie-Grenzen.",
+                                 "/options", "Zurück zu den Optionen");
+    }
     if (!s_modbus_ready) {
         return send_message_page(req, "Fehler", "Keine Verbindung zum Wechselrichter.",
                                  "/options", "Zurück zu den Optionen");
@@ -2041,9 +2889,9 @@ static esp_err_t config_soclimits_post_handler(httpd_req_t *req) {
 
     uint16_t echo = 0;
     uint16_t r[2] = { 0, 0 };
-    esp_err_t err = mb_transaction(&s_inv, 0x06, REG_MAX_SOC, (uint16_t)(vmax * 10), &echo);
-    if (err == ESP_OK) err = mb_transaction(&s_inv, 0x06, REG_MIN_SOC, (uint16_t)(vmin * 10), &echo);
-    bool readback = (mb_transaction(&s_inv, 0x03, REG_MAX_SOC, 2, r) == ESP_OK);
+    esp_err_t err = mb_transaction(&s_inv, 0x06, RG.max_soc, (uint16_t)(vmax * 10), &echo);
+    if (err == ESP_OK) err = mb_transaction(&s_inv, 0x06, RG.min_soc, (uint16_t)(vmin * 10), &echo);
+    bool readback = (mb_transaction(&s_inv, 0x03, RG.max_soc, 2, r) == ESP_OK);
     xSemaphoreGive(s_mb_mutex);
 
     if (readback) {
@@ -2122,6 +2970,52 @@ static esp_err_t config_wallbox_post_handler(httpd_req_t *req) {
         "/", "Zur Startseite");
     schedule_restart();
     return r;
+}
+
+
+// OCPP an/aus (POST /config/ocpp) – wirkt sofort, kein Neustart nötig
+static esp_err_t config_ocpp_post_handler(httpd_req_t *req) {
+    if (!guard(req, true)) return ESP_OK;
+    char body[32], v[4];
+    if (!read_body(req, body, sizeof(body)) || !form_value(body, "on", v, sizeof(v))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Ungültige Anfrage");
+        return ESP_FAIL;
+    }
+    uint32_t on = (v[0] == '1') ? 1 : 0;
+    if (config_save_u32("ocpp_on", on) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Speichern fehlgeschlagen");
+        return ESP_FAIL;
+    }
+    g_ocpp_on = on;
+#ifdef OCPP_WS
+    if (!on && s_oc_fd >= 0 && s_httpd) httpd_sess_trigger_close(s_httpd, s_oc_fd);
+#endif
+    ESP_LOGI(TAG, "OCPP %s", on ? "aktiviert" : "deaktiviert");
+    return send_message_page(req, "Gespeichert", on ? "OCPP ist aktiviert." : "OCPP ist deaktiviert.",
+                             "/options", "Zur&uuml;ck zu den Optionen");
+}
+
+// Befehl an die Wallbox (POST /wb/ocpp): cmd = start | stop | limit | trigger, a = Ampere
+static esp_err_t ocpp_cmd_post_handler(httpd_req_t *req) {
+    if (!guard(req, true)) return ESP_OK;
+    char body[64], cmd[16], a[8] = "";
+    if (!read_body(req, body, sizeof(body)) || !form_value(body, "cmd", cmd, sizeof(cmd))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Ungültige Anfrage");
+        return ESP_FAIL;
+    }
+    int amps = 0;
+    if (strcmp(cmd, "limit") == 0) {
+        char *endp = NULL;
+        long v = form_value(body, "a", a, sizeof(a)) ? strtol(a, &endp, 10) : -1;
+        if (a[0] == '\0' || endp == NULL || *endp != '\0' || v < 0 || v > 32) {
+            return send_message_page(req, "Fehler", "Ung&uuml;ltiger Wert. Erlaubt sind 0 bis 32 Ampere (0 = Laden pausieren).",
+                                     "/options", "Zur&uuml;ck zu den Optionen");
+        }
+        amps = (int)v;
+    }
+    const char *msg = oc_command(cmd, amps);
+    ESP_LOGI(TAG, "OCPP-Befehl '%s' (%d A): %s", cmd, amps, msg);
+    return send_message_page(req, "OCPP", msg, "/options", "Zur&uuml;ck zu den Optionen");
 }
 
 // Abfrage-Intervall speichern (POST /config/poll)
@@ -2626,7 +3520,11 @@ static void start_webserver(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = 8192;
     config.lru_purge_enable = true;
-    config.max_uri_handlers = 24;
+    config.max_uri_handlers = 28;
+#ifdef OCPP_WS
+    config.uri_match_fn = httpd_uri_match_wildcard;   // "/ocpp*" (Wallbox hängt ihre ID an den Pfad)
+    config.close_fn = oc_close_fn;
+#endif
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &config) != ESP_OK) {
@@ -2634,6 +3532,7 @@ static void start_webserver(void) {
         return;
     }
 
+    s_httpd = server;
     httpd_uri_t uris[] = {
         { .uri = "/",                 .method = HTTP_GET,  .handler = root_get_handler },
         { .uri = "/set",              .method = HTTP_POST, .handler = set_post_handler },
@@ -2648,7 +3547,10 @@ static void start_webserver(void) {
         { .uri = "/config/poll",      .method = HTTP_POST, .handler = config_poll_post_handler },
         { .uri = "/config/wallbox",   .method = HTTP_POST, .handler = config_wallbox_post_handler },
         { .uri = "/config/soclimits", .method = HTTP_POST, .handler = config_soclimits_post_handler },
+        { .uri = "/config/inverter",  .method = HTTP_POST, .handler = config_inverter_post_handler },
         { .uri = "/config/calc",      .method = HTTP_POST, .handler = config_calc_post_handler },
+        { .uri = "/config/ocpp",      .method = HTTP_POST, .handler = config_ocpp_post_handler },
+        { .uri = "/wb/ocpp",          .method = HTTP_POST, .handler = ocpp_cmd_post_handler },
         { .uri = "/ota",              .method = HTTP_POST, .handler = ota_post_handler },
         { .uri = "/favicon.ico",      .method = HTTP_GET,  .handler = favicon_get_handler },
         { .uri = "/apple-touch-icon.png", .method = HTTP_GET, .handler = apple_icon_get_handler },
@@ -2657,6 +3559,17 @@ static void start_webserver(void) {
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         httpd_register_uri_handler(server, &uris[i]);
     }
+#ifdef OCPP_WS
+    httpd_uri_t ocpp_uri = {
+        .uri = "/ocpp*", .method = HTTP_GET, .handler = ocpp_ws_handler,
+        .user_ctx = NULL, .is_websocket = true, .handle_ws_control_frames = false,
+        .supported_subprotocol = "ocpp1.6",
+    };
+    httpd_register_uri_handler(server, &ocpp_uri);
+    ESP_LOGI(TAG, "OCPP-Server bereit: ws://<IP>/ocpp");
+#else
+    ESP_LOGW(TAG, "OCPP nicht verfügbar: CONFIG_HTTPD_WS_SUPPORT ist nicht aktiviert");
+#endif
 }
 
 // =====================================================
@@ -2717,6 +3630,11 @@ static esp_netif_t *init_ethernet(void) {
 }
 
 static void init_wifi_softap(void) {
+    uint8_t mac[6] = {0};
+    if (esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP) == ESP_OK) {
+        snprintf(s_ap_ssid, sizeof(s_ap_ssid), AP_WIFI_SSID_PREFIX "-%02X%02X%02X%02X%02X%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    }
     esp_netif_create_default_wifi_ap();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -2724,8 +3642,7 @@ static void init_wifi_softap(void) {
 
     wifi_config_t wifi_config = {
         .ap = {
-            .ssid = AP_WIFI_SSID,
-            .ssid_len = strlen(AP_WIFI_SSID),
+            .ssid_len = 0,
             .channel = AP_WIFI_CHANNEL,
             .password = AP_WIFI_PASS,
             .max_connection = AP_MAX_CONN,
@@ -2733,6 +3650,8 @@ static void init_wifi_softap(void) {
             .pmf_cfg = { .required = false },
         },
     };
+    strlcpy((char *)wifi_config.ap.ssid, s_ap_ssid, sizeof(wifi_config.ap.ssid));
+    wifi_config.ap.ssid_len = strlen(s_ap_ssid);
     if (strlen(AP_WIFI_PASS) == 0) {
         wifi_config.ap.authmode = WIFI_AUTH_OPEN;
     }
@@ -2744,7 +3663,7 @@ static void init_wifi_softap(void) {
     // Sendeleistung begrenzen (Einheit 0,25 dBm; 40 = 10 dBm): kleinere Stromspitzen
     ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(40));
 
-    ESP_LOGI(TAG, "WLAN-Hotspot gestartet. SSID: %s | IP: 192.168.4.1", AP_WIFI_SSID);
+    ESP_LOGI(TAG, "WLAN-Hotspot gestartet. SSID: %s | IP: 192.168.4.1", s_ap_ssid);
 }
 
 void app_main(void) {
@@ -2755,16 +3674,26 @@ void app_main(void) {
     }
     ESP_ERROR_CHECK(ret);
 
+    profiles_init();
     config_load();
+    s_inv.port = g_prof->port;
+    s_inv.unit_id = g_prof->unit_id;
+    ESP_LOGI(TAG, "Wechselrichter-Profil: %s", g_prof->name);
     ESP_LOGI(TAG, "Konfiguration: Sungrow-IP = %s, Wallbox-IP = %s", g_mb_ip, g_wb_ip[0] ? g_wb_ip : "(aus)");
 
     s_mb_mutex    = xSemaphoreCreateMutex();
     s_cache_mutex = xSemaphoreCreateMutex();
     s_net_events  = xEventGroupCreate();
     cache_init();
+    oc_init(&g_oc, oc_time_now);
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    // Uhrzeit per SNTP (nur für OCPP-Zeitstempel; ohne Internet bleibt die Uhr ungesetzt)
+    esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
 
     // Ethernet starten (kein festes Warten: Modbus-Task wartet auf das GOT_IP-Event)
     s_eth_netif = init_ethernet();
